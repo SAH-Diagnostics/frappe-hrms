@@ -23,9 +23,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -62,10 +59,9 @@ jobs:
       - name: Add Lightsail host to known_hosts
         run: |
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
           ssh-keyscan -p ${{ steps.context.outputs.port }} ${{ steps.context.outputs.host }} >> ~/.ssh/known_hosts
-
-      - name: Build containers
-        run: docker compose -f docker/docker-compose.yml build
+          chmod 644 ~/.ssh/known_hosts
 
       - name: Package repository
         run: |
@@ -87,5 +83,18 @@ jobs:
           DEPLOY_ARCHIVE: ${{ env.DEPLOY_ARCHIVE }}
         run: |
           set -euo pipefail
-          ssh -i "$SSH_KEY_PATH" -p "$LIGHTSAIL_PORT" "$LIGHTSAIL_USER@$LIGHTSAIL_HOST" "set -euo pipefail && mkdir -p '$REMOTE_PATH' && tar -xzf /tmp/$DEPLOY_ARCHIVE -C '$REMOTE_PATH' --strip-components=0 && cd '$REMOTE_PATH' && docker compose -f '$COMPOSE_FILE' --env-file '$ENV_FILE' up -d --build && docker system prune -f"
+          ssh -i "$SSH_KEY_PATH" -p "$LIGHTSAIL_PORT" -o StrictHostKeyChecking=no "$LIGHTSAIL_USER@$LIGHTSAIL_HOST" bash -s <<EOF
+            set -euo pipefail
+            REMOTE_PATH='$REMOTE_PATH'
+            COMPOSE_FILE='$COMPOSE_FILE'
+            ENV_FILE='$ENV_FILE'
+            DEPLOY_ARCHIVE='$DEPLOY_ARCHIVE'
+            mkdir -p "\$REMOTE_PATH"
+            tar -xzf "/tmp/\$DEPLOY_ARCHIVE" -C "\$REMOTE_PATH" --strip-components=0
+            cd "\$REMOTE_PATH"
+            docker compose -f "\$COMPOSE_FILE" --env-file "\$ENV_FILE" down || true
+            docker compose -f "\$COMPOSE_FILE" --env-file "\$ENV_FILE" up -d --build
+            docker system prune -f
+            rm -f "/tmp/\$DEPLOY_ARCHIVE"
+          EOF
 
