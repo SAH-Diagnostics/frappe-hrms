@@ -21,16 +21,31 @@ jobs:
 
       - name: Validate AWS Secrets
         run: |
-          if [ "${{ secrets.AWS_ACCESS_KEY_ID }}" == "" ]; then
-            echo "::error::AWS_ACCESS_KEY_ID secret is not set. Please configure it in repository settings (Settings > Secrets and variables > Actions)"
-            exit 1
+          MISSING_SECRETS=()
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then
+            MISSING_SECRETS+=("AWS_ACCESS_KEY_ID")
           fi
-          if [ "${{ secrets.AWS_SECRET_ACCESS_KEY }}" == "" ]; then
-            echo "::error::AWS_SECRET_ACCESS_KEY secret is not set. Please configure it in repository settings (Settings > Secrets and variables > Actions)"
-            exit 1
+          if [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            MISSING_SECRETS+=("AWS_SECRET_ACCESS_KEY")
           fi
-          if [ "${{ secrets.AWS_DEPLOY_SECRET_ID }}" == "" ]; then
-            echo "::error::AWS_DEPLOY_SECRET_ID secret is not set. Please configure it in repository settings (Settings > Secrets and variables > Actions)"
+          if [ -z "${{ secrets.AWS_DEPLOY_SECRET_ID }}" ]; then
+            MISSING_SECRETS+=("AWS_DEPLOY_SECRET_ID")
+          fi
+          
+          if [ ${#MISSING_SECRETS[@]} -gt 0 ]; then
+            echo "::error::The following GitHub Secrets are missing: ${MISSING_SECRETS[*]}"
+            echo ""
+            echo "Please add these secrets in your GitHub repository:"
+            echo "1. Go to: Settings > Secrets and variables > Actions"
+            echo "2. Click 'New repository secret'"
+            echo "3. Add each of the following:"
+            echo "   - AWS_ACCESS_KEY_ID: Your AWS access key ID"
+            echo "   - AWS_SECRET_ACCESS_KEY: Your AWS secret access key"
+            echo "   - AWS_DEPLOY_SECRET_ID: The ARN of your AWS Secrets Manager secret (e.g., arn:aws:secretsmanager:eu-north-1:280648354859:secret:prod/frappe-Aojmb0)"
+            echo "   - AWS_REGION (optional): AWS region for operations (defaults to eu-west-2)"
+            echo "   - AWS_SECRETS_REGION (optional): Region where the secret is stored (defaults to AWS_REGION or eu-west-2)"
+            echo ""
+            echo "Note: These credentials are needed to authenticate to AWS and retrieve the deployment secrets from AWS Secrets Manager."
             exit 1
           fi
           echo "✓ All required AWS secrets are configured"
@@ -44,10 +59,36 @@ jobs:
 
       - name: Retrieve Secrets from AWS Secrets Manager
         id: get-secrets
+        env:
+          SECRET_ARN: ${{ secrets.AWS_DEPLOY_SECRET_ID }}
+          SECRETS_REGION: ${{ secrets.AWS_SECRETS_REGION || secrets.AWS_REGION || 'eu-west-2' }}
         run: |
-          SECRET_ARN="${{ secrets.AWS_DEPLOY_SECRET_ID }}"
+          echo "Retrieving secret from AWS Secrets Manager..."
+          echo "Secret ARN: $SECRET_ARN"
+          echo "Region: $SECRETS_REGION"
+          
+          # Extract region from ARN if it's a full ARN (format: arn:aws:secretsmanager:REGION:ACCOUNT:secret:NAME)
+          if [[ "$SECRET_ARN" == arn:aws:secretsmanager:* ]]; then
+            ARN_REGION=$(echo "$SECRET_ARN" | cut -d: -f4)
+            if [ -n "$ARN_REGION" ]; then
+              echo "Using region from ARN: $ARN_REGION"
+              SECRETS_REGION="$ARN_REGION"
+            fi
+          fi
+          
           # Get secret value - AWS Secrets Manager returns key-value pairs as JSON
-          SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text)
+          SECRET_VALUE=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_ARN" \
+            --region "$SECRETS_REGION" \
+            --query SecretString \
+            --output text)
+          
+          if [ -z "$SECRET_VALUE" ]; then
+            echo "::error::Failed to retrieve secret from AWS Secrets Manager"
+            exit 1
+          fi
+          
+          echo "✓ Successfully retrieved secret from AWS Secrets Manager"
           echo "SECRET_JSON<<EOF" >> $GITHUB_ENV
           echo "$SECRET_VALUE" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
