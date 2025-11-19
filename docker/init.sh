@@ -1,12 +1,17 @@
-#!bin/bash
+#!/bin/bash
+
+set -euo pipefail
+
+: "${NODE_VERSION_DEVELOP:=18}"
+: "${NVM_DIR:=/home/frappe/.nvm}"
 
 if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
     echo "Bench already exists, skipping init"
-    cd frappe-bench
-    bench start
-else
-    echo "Creating new bench..."
+    cd /home/frappe/frappe-bench
+    exec bench start
 fi
+
+echo "Creating new bench..."
 
 export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 
