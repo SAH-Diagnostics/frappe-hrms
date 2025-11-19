@@ -1,5 +1,7 @@
 version: "3.8" # Updated version
 services:
+  # MariaDB is kept for local development
+  # For production, use external PostgreSQL via environment variables
   mariadb:
     image: mariadb:10.8
     command:
@@ -11,6 +13,8 @@ services:
       MYSQL_ROOT_PASSWORD: 123
     volumes:
       - mariadb-data:/var/lib/mysql
+    profiles:
+      - local
 
   redis:
     image: redis:alpine
@@ -20,12 +24,23 @@ services:
     command: bash /workspace/init.sh
     environment:
       - SHELL=/bin/bash
+      # Database connection from environment file (for production)
+      # Note: Frappe uses MariaDB/MySQL, not PostgreSQL
+      # For external database, set DB_HOST to the database endpoint
+      - DB_HOST=${DB_HOST:-mariadb}
+      - DB_NAME=${DB_NAME:-frappe_db}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-123}
+      - DB_PORT=${DB_PORT:-3306}
+      - SITE_NAME=${SITE_NAME:-hrms.localhost}
     working_dir: /home/frappe
     volumes:
       - .:/workspace
     ports:
       - 8000:8000
       - 9000:9000
+    depends_on:
+      - redis
 
 volumes:
   mariadb-data:

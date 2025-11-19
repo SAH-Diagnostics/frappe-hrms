@@ -1,0 +1,159 @@
+name: Build and Deploy to Lightsail
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types: [closed]
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Retrieve Secrets from AWS Secrets Manager
+        id: get-secrets
+        run: |
+          SECRET_ARN="${{ secrets.AWS_DEPLOY_SECRET_ID }}"
+          # Get secret value - AWS Secrets Manager returns key-value pairs as JSON
+          SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text)
+          echo "SECRET_JSON<<EOF" >> $GITHUB_ENV
+          echo "$SECRET_VALUE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prepare Deployment Context
+        id: context
+        env:
+          SECRET_JSON: ${{ env.SECRET_JSON }}
+        run: |
+          python3 deploy/lightsail/prepare_context.py
+          # The prepare_context.py script writes outputs to GITHUB_OUTPUT
+          # These will be available as step outputs automatically
+
+      - name: Create Deployment Package
+        run: |
+          # Create a tarball excluding unnecessary files
+          tar --exclude='.git' \
+              --exclude='node_modules' \
+              --exclude='.github' \
+              --exclude='*.pyc' \
+              --exclude='__pycache__' \
+              --exclude='.env*' \
+              -czf deploy-package.tar.gz .
+
+      - name: Copy Files to Lightsail
+        env:
+          SSH_KEY: ${{ steps.context.outputs.ssh_key_path }}
+          LIGHTSAIL_HOST: ${{ steps.context.outputs.host }}
+          LIGHTSAIL_USER: ${{ steps.context.outputs.user }}
+          LIGHTSAIL_PORT: ${{ steps.context.outputs.port }}
+        run: |
+          # Set SSH key permissions
+          chmod 600 "$SSH_KEY"
+          
+          # Copy package to Lightsail
+          scp -i "$SSH_KEY" \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -P "${LIGHTSAIL_PORT:-22}" \
+              deploy-package.tar.gz \
+              "$LIGHTSAIL_USER@$LIGHTSAIL_HOST:/tmp/"
+
+      - name: Deploy on Lightsail
+        env:
+          SSH_KEY: ${{ steps.context.outputs.ssh_key_path }}
+          LIGHTSAIL_HOST: ${{ steps.context.outputs.host }}
+          LIGHTSAIL_USER: ${{ steps.context.outputs.user }}
+          LIGHTSAIL_PORT: ${{ steps.context.outputs.port }}
+          REMOTE_PATH: ${{ steps.context.outputs.remote_path }}
+        run: |
+          ssh -i "$SSH_KEY" \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -p "${LIGHTSAIL_PORT:-22}" \
+              "$LIGHTSAIL_USER@$LIGHTSAIL_HOST" << 'ENDSSH'
+            set -e
+            
+            # Create remote directory if it doesn't exist
+            sudo mkdir -p "${{ steps.context.outputs.remote_path }}"
+            sudo chown -R $USER:$USER "${{ steps.context.outputs.remote_path }}"
+            
+            # Extract package
+            cd "${{ steps.context.outputs.remote_path }}"
+            tar -xzf /tmp/deploy-package.tar.gz
+            rm /tmp/deploy-package.tar.gz
+            
+            # Copy env file to docker directory for docker-compose to use
+            if [ -f "deploy/lightsail/.env.remote" ]; then
+              cp deploy/lightsail/.env.remote docker/.env
+            fi
+            
+            # Stop existing containers
+            cd docker
+            docker compose down || true
+            
+            # Build and start containers (docker-compose will automatically use .env file)
+            docker compose --env-file .env up -d --build
+            
+            # Clean up dangling images
+            docker system prune -f
+            
+            # Setup nginx configuration
+            sudo tee /etc/nginx/sites-available/frappe-hrms > /dev/null << 'NGINX_CONFIG'
+          server {
+              listen 80;
+              server_name _;
+              
+              client_max_body_size 50M;
+              
+              location / {
+                  proxy_pass http://localhost:8000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_read_timeout 300s;
+                  proxy_connect_timeout 75s;
+              }
+              
+              location /socket.io {
+                  proxy_pass http://localhost:9000;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+          NGINX_CONFIG
+            
+            # Enable site and reload nginx
+            sudo ln -sf /etc/nginx/sites-available/frappe-hrms /etc/nginx/sites-enabled/
+            sudo rm -f /etc/nginx/sites-enabled/default
+            sudo nginx -t && sudo systemctl reload nginx
+            
+            echo "Deployment completed successfully!"
+          ENDSSH
+
