@@ -152,6 +152,7 @@ def main() -> None:
         "port": lightsail_port,
         "compose_file": compose_file,
         "env_file": "deploy/lightsail/.env.remote",
+        "env_content": env_content,
     }
 
     output_file = os.environ.get("GITHUB_OUTPUT")
@@ -160,7 +161,13 @@ def main() -> None:
 
     with open(output_file, "a", encoding="utf-8") as fh:
         for key, value in outputs.items():
-            fh.write(f"{key}={value}\n")
+            if key == "env_content":
+                # Use multiline format for env_content
+                fh.write(f"{key}<<EOF\n")
+                fh.write(value)
+                fh.write("\nEOF\n")
+            else:
+                fh.write(f"{key}={value}\n")
 
 
 if __name__ == "__main__":

@@ -72,66 +72,93 @@ jobs:
         run: |
           python deploy/lightsail/prepare_context.py
 
-      - name: Verify SSH key and setup
+      - name: Setup SSH key and test connection
         run: |
+          # Ensure SSH key has correct permissions
           chmod 600 ${{ steps.prepare.outputs.ssh_key_path }}
-          ssh-keyscan -p ${{ steps.prepare.outputs.port }} -H ${{ steps.prepare.outputs.host }} >> ~/.ssh/known_hosts || true
-
-      - name: Sync code to Lightsail using rsync
+          ls -la ${{ steps.prepare.outputs.ssh_key_path }}
+          
+          # Add host to known_hosts
+          mkdir -p ~/.ssh
+          ssh-keyscan -p ${{ steps.prepare.outputs.port }} -H ${{ steps.prepare.outputs.host }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          
+          # Test SSH connection
+          echo "Testing SSH connection..."
+          ssh -v -p ${{ steps.prepare.outputs.port }} \
+            -i ${{ steps.prepare.outputs.ssh_key_path }} \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o IdentitiesOnly=yes \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }} "echo 'SSH connection successful'"
+      
+      - name: Create .env file for deployment
         run: |
-          rsync -avz --delete \
-            -e "ssh -p ${{ steps.prepare.outputs.port }} -i ${{ steps.prepare.outputs.ssh_key_path }} -o StrictHostKeyChecking=no" \
-            --exclude='.git' \
-            --exclude='node_modules' \
-            --exclude='*.pyc' \
-            --exclude='__pycache__' \
-            --exclude='.pytest_cache' \
-            --exclude='coverage' \
-            --exclude='*.log' \
-            --exclude='.env*' \
-            --exclude='*.pem' \
-            --exclude='*.key' \
-            ./ \
-            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }}:${{ steps.prepare.outputs.remote_path }}/
+          cat > deploy.env << 'EOF'
+          ${{ steps.prepare.outputs.env_content }}
+          EOF
+          echo "Environment file created:"
+          cat deploy.env
+      
+      - name: Copy .env file to server
+        run: |
+          scp -P ${{ steps.prepare.outputs.port }} \
+            -i ${{ steps.prepare.outputs.ssh_key_path }} \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            deploy.env \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }}:/tmp/frappe.env
 
       - name: Deploy on Lightsail instance
         run: |
           ssh -p ${{ steps.prepare.outputs.port }} \
             -i ${{ steps.prepare.outputs.ssh_key_path }} \
             -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
             ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }} << 'ENDSSH'
           
           set -e
           
           echo "=== Starting deployment ==="
           
-          # Ensure project directory has correct permissions
-          sudo chown -R ${{ steps.prepare.outputs.user }}:${{ steps.prepare.outputs.user }} ${{ steps.prepare.outputs.remote_path }}
-          
-          cd ${{ steps.prepare.outputs.remote_path }}
-          
-          echo "=== Files synced successfully ==="
-          
-          # Check if .env.remote exists, if not create a default one
-          if [ ! -f "${{ steps.prepare.outputs.env_file }}" ]; then
-            echo "Warning: .env.remote not found, creating default"
-            mkdir -p deploy/lightsail
-            touch deploy/lightsail/.env.remote
+          # Install git if not present
+          if ! command -v git &> /dev/null; then
+            echo "Installing git..."
+            sudo apt-get update && sudo apt-get install -y git
           fi
+          
+          # Clone or pull the repository
+          if [ -d "${{ steps.prepare.outputs.remote_path }}/.git" ]; then
+            echo "=== Repository exists, pulling latest changes ==="
+            cd ${{ steps.prepare.outputs.remote_path }}
+            sudo chown -R ${{ steps.prepare.outputs.user }}:${{ steps.prepare.outputs.user }} .
+            git fetch origin
+            git reset --hard origin/main
+            git pull origin main
+          else
+            echo "=== Cloning repository ==="
+            sudo rm -rf ${{ steps.prepare.outputs.remote_path }}
+            git clone https://github.com/SAH-Diagnostics/frappe-hrms.git ${{ steps.prepare.outputs.remote_path }}
+            cd ${{ steps.prepare.outputs.remote_path }}
+            sudo chown -R ${{ steps.prepare.outputs.user }}:${{ steps.prepare.outputs.user }} .
+          fi
+          
+          echo "=== Setting up environment file ==="
+          mkdir -p deploy/lightsail
+          mv /tmp/frappe.env deploy/lightsail/.env.remote
           
           # Stop existing containers
           echo "=== Stopping existing containers ==="
           if [ -f "${{ steps.prepare.outputs.compose_file }}" ]; then
-            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file ${{ steps.prepare.outputs.env_file }} down || true
+            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/lightsail/.env.remote down || true
           fi
           
           # Pull latest images and rebuild
           echo "=== Building and starting containers ==="
-          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file ${{ steps.prepare.outputs.env_file }} pull || true
-          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file ${{ steps.prepare.outputs.env_file }} up -d --build
+          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/lightsail/.env.remote pull || true
+          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/lightsail/.env.remote up -d --build
           
           echo "=== Waiting for services to be ready ==="
-          sleep 10
+          sleep 15
           
           # Check container status
           echo "=== Container status ==="
