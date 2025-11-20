@@ -89,6 +89,7 @@ jobs:
             --exclude='coverage' \
             --exclude='*.log' \
             --exclude='deploy-package.tar.gz' \
+            --warning=no-file-changed \
             .
 
       - name: Copy deployment package to Lightsail
