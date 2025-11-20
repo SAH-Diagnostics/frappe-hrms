@@ -175,9 +175,10 @@ jobs:
           else
             echo "=== Cloning repository ==="
             sudo rm -rf ${{ steps.prepare.outputs.remote_path }}
+            sudo mkdir -p ${{ steps.prepare.outputs.remote_path }}
+            sudo chown -R ${{ steps.prepare.outputs.user }}:${{ steps.prepare.outputs.user }} ${{ steps.prepare.outputs.remote_path }}
             git clone https://github.com/SAH-Diagnostics/frappe-hrms.git ${{ steps.prepare.outputs.remote_path }}
             cd ${{ steps.prepare.outputs.remote_path }}
-            sudo chown -R ${{ steps.prepare.outputs.user }}:${{ steps.prepare.outputs.user }} .
           fi
           
           echo "=== Setting up environment file ==="
