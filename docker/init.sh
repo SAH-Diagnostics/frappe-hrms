@@ -37,17 +37,7 @@ bench init --skip-redis-config-generation frappe-bench
 
 cd frappe-bench
 
-# Configure database host
-if [ "$DB_HOST" != "mariadb" ]; then
-    # External database (production)
-    echo "Using external database: $DB_HOST:$DB_PORT"
-    bench set-mariadb-host "$DB_HOST"
-    bench set-mariadb-port "$DB_PORT"
-else
-    # Local MariaDB container (development)
-    bench set-mariadb-host mariadb
-fi
-
+# Configure Redis (required for all deployments)
 bench set-redis-cache-host redis://redis:6379
 bench set-redis-queue-host redis://redis:6379
 bench set-redis-socketio-host redis://redis:6379
@@ -61,19 +51,21 @@ bench get-app hrms
 
 # Create site with appropriate database configuration
 if [ "$DB_HOST" != "mariadb" ]; then
-    # External database - use provided credentials
-    echo "Creating site with external database..."
+    # External database (production) - pass all config directly to new-site
+    echo "Creating site with external database: $DB_HOST:$DB_PORT"
     bench new-site "$SITE_NAME" \
         --force \
         --db-host "$DB_HOST" \
         --db-port "$DB_PORT" \
         --db-name "$DB_NAME" \
-        --db-username "$DB_USER" \
-        --db-password "$DB_PASSWORD" \
+        --mariadb-root-username "$DB_USER" \
+        --mariadb-root-password "$DB_PASSWORD" \
         --admin-password admin \
         --no-mariadb-socket
 else
-    # Local MariaDB
+    # Local MariaDB container (development)
+    echo "Creating site with local MariaDB"
+    bench set-mariadb-host mariadb
     bench new-site "$SITE_NAME" \
         --force \
         --mariadb-root-password "$DB_PASSWORD" \
