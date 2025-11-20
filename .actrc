@@ -1,0 +1,12 @@
+# act configuration file
+# This file configures act to test GitHub Actions workflows locally
+
+# Use medium size image (includes most tools)
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# Load secrets from .secrets file
+--secret-file .secrets
+
+# Bind Docker socket for Docker-in-Docker operations
+--bind
+
