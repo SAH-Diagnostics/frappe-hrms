@@ -74,22 +74,60 @@ jobs:
 
       - name: Setup SSH key and test connection
         run: |
+          echo "=== SSH Key Setup and Verification ==="
+          
           # Ensure SSH key has correct permissions
           chmod 600 ${{ steps.prepare.outputs.ssh_key_path }}
+          echo "✓ SSH key permissions:"
           ls -la ${{ steps.prepare.outputs.ssh_key_path }}
           
+          # Verify key format
+          echo ""
+          echo "✓ Verifying SSH key format..."
+          head -1 ${{ steps.prepare.outputs.ssh_key_path }}
+          tail -1 ${{ steps.prepare.outputs.ssh_key_path }}
+          
+          # Check key type
+          echo ""
+          echo "✓ Checking key type..."
+          ssh-keygen -l -f ${{ steps.prepare.outputs.ssh_key_path }} || echo "Warning: Could not determine key type"
+          
           # Add host to known_hosts
+          echo ""
+          echo "✓ Adding host to known_hosts..."
           mkdir -p ~/.ssh
           ssh-keyscan -p ${{ steps.prepare.outputs.port }} -H ${{ steps.prepare.outputs.host }} >> ~/.ssh/known_hosts 2>/dev/null || true
           
           # Test SSH connection
-          echo "Testing SSH connection..."
-          ssh -v -p ${{ steps.prepare.outputs.port }} \
+          echo ""
+          echo "✓ Testing SSH connection to ${{ steps.prepare.outputs.host }}..."
+          echo "  User: ${{ steps.prepare.outputs.user }}"
+          echo "  Port: ${{ steps.prepare.outputs.port }}"
+          echo ""
+          
+          if ssh -p ${{ steps.prepare.outputs.port }} \
             -i ${{ steps.prepare.outputs.ssh_key_path }} \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=~/.ssh/known_hosts \
             -o IdentitiesOnly=yes \
-            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }} "echo 'SSH connection successful'"
+            -o ConnectTimeout=30 \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }} "echo 'SSH connection successful!'" 2>&1; then
+            echo ""
+            echo "✅ SSH connection successful!"
+          else
+            echo ""
+            echo "❌ SSH connection failed!"
+            echo ""
+            echo "Troubleshooting steps:"
+            echo "1. Verify the SSH key in AWS Secrets Manager matches your Lightsail key"
+            echo "2. Download your Lightsail key and encode it: cat key.pem | base64 -w 0"
+            echo "3. Update AWS Secrets Manager with the correct base64-encoded key"
+            echo "4. Ensure the public key is in /home/ubuntu/.ssh/authorized_keys on the server"
+            echo ""
+            echo "Run this locally to test your key:"
+            echo "  ssh -i your-key.pem ubuntu@${{ steps.prepare.outputs.host }}"
+            exit 1
+          fi
       
       - name: Create .env file for deployment
         run: |
