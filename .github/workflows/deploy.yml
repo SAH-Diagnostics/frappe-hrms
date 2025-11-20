@@ -77,10 +77,10 @@ jobs:
           chmod 600 ${{ steps.prepare.outputs.ssh_key_path }}
           ssh-keyscan -p ${{ steps.prepare.outputs.port }} -H ${{ steps.prepare.outputs.host }} >> ~/.ssh/known_hosts || true
 
-      - name: Create deployment package
+      - name: Sync code to Lightsail using rsync
         run: |
-          # Create a tarball of the repository excluding unnecessary files
-          tar -czf deploy-package.tar.gz \
+          rsync -avz --delete \
+            -e "ssh -p ${{ steps.prepare.outputs.port }} -i ${{ steps.prepare.outputs.ssh_key_path }} -o StrictHostKeyChecking=no" \
             --exclude='.git' \
             --exclude='node_modules' \
             --exclude='*.pyc' \
@@ -88,17 +88,11 @@ jobs:
             --exclude='.pytest_cache' \
             --exclude='coverage' \
             --exclude='*.log' \
-            --exclude='deploy-package.tar.gz' \
-            --warning=no-file-changed \
-            .
-
-      - name: Copy deployment package to Lightsail
-        run: |
-          scp -P ${{ steps.prepare.outputs.port }} \
-            -i ${{ steps.prepare.outputs.ssh_key_path }} \
-            -o StrictHostKeyChecking=no \
-            deploy-package.tar.gz \
-            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }}:/tmp/
+            --exclude='.env*' \
+            --exclude='*.pem' \
+            --exclude='*.key' \
+            ./ \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }}:${{ steps.prepare.outputs.remote_path }}/
 
       - name: Deploy on Lightsail instance
         run: |
@@ -111,16 +105,12 @@ jobs:
           
           echo "=== Starting deployment ==="
           
-          # Create project directory if it doesn't exist
-          sudo mkdir -p ${{ steps.prepare.outputs.remote_path }}
-          sudo chown ${{ steps.prepare.outputs.user }}:${{ steps.prepare.outputs.user }} ${{ steps.prepare.outputs.remote_path }}
+          # Ensure project directory has correct permissions
+          sudo chown -R ${{ steps.prepare.outputs.user }}:${{ steps.prepare.outputs.user }} ${{ steps.prepare.outputs.remote_path }}
           
-          # Extract deployment package
           cd ${{ steps.prepare.outputs.remote_path }}
-          tar -xzf /tmp/deploy-package.tar.gz
-          rm /tmp/deploy-package.tar.gz
           
-          echo "=== Files extracted successfully ==="
+          echo "=== Files synced successfully ==="
           
           # Check if .env.remote exists, if not create a default one
           if [ ! -f "${{ steps.prepare.outputs.env_file }}" ]; then
