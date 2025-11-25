@@ -33,6 +33,7 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:-123}
       - DB_PORT=${DB_PORT:-3306}
       - SITE_NAME=${SITE_NAME:-hrms.localhost}
+      - SITE_URL=${SITE_URL:-http://localhost:8000}
     working_dir: /home/frappe
     volumes:
       - .:/workspace

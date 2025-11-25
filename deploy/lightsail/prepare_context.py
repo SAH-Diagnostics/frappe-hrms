@@ -85,16 +85,22 @@ def main() -> None:
         # Default to 3306 for MariaDB/MySQL (Frappe's default)
         env_parts.append("DB_PORT=3306")
     
-    # Add site name (use IP or a default)
-    # Frappe site names should not contain dots for IP addresses, use underscore or just the IP
-    if "LIGHTSAIL_IP" in secret:
-        # Use the IP as site name, replacing dots with underscores if needed
+    # Add site name and URL
+    # Use SITE_NAME from secrets if available, otherwise use domain without www
+    if "SITE_NAME" in secret:
+        env_parts.append(f"SITE_NAME={secret['SITE_NAME']}")
+    elif "LIGHTSAIL_IP" in secret:
+        # Fallback: Use the IP as site name, replacing dots with underscores
         site_name = secret['LIGHTSAIL_IP'].replace('.', '_')
         env_parts.append(f"SITE_NAME={site_name}")
     elif "lightsail_host" in secret_mapped:
         # Fallback to host if IP not available
         site_name = secret_mapped['lightsail_host'].replace('.', '_')
         env_parts.append(f"SITE_NAME={site_name}")
+    
+    # Add SITE_URL for proper host_name configuration
+    if "SITE_URL" in secret:
+        env_parts.append(f"SITE_URL={secret['SITE_URL']}")
     
     # Add any existing env_file_content or use the built one
     if "env_file_content" in secret:

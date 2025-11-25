@@ -13,17 +13,24 @@ DB_USER="${DB_USER:-root}"
 DB_PASSWORD="${DB_PASSWORD:-123}"
 DB_PORT="${DB_PORT:-3306}"
 SITE_NAME="${SITE_NAME:-hrms.localhost}"
+SITE_URL="${SITE_URL:-http://localhost:8000}"
 
 if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
     echo "Bench already exists, skipping init"
     cd /home/frappe/frappe-bench
     
     # Update site configuration if environment variables are provided
-    if [ -f "sites/${SITE_NAME}/site_config.json" ] && [ "$DB_HOST" != "mariadb" ]; then
-        echo "Updating database configuration..."
-        bench set-config db_host "$DB_HOST" --site "$SITE_NAME"
-        bench set-config db_port "$DB_PORT" --site "$SITE_NAME"
-        bench set-config db_name "$DB_NAME" --site "$SITE_NAME"
+    if [ -f "sites/${SITE_NAME}/site_config.json" ]; then
+        if [ "$DB_HOST" != "mariadb" ]; then
+            echo "Updating database configuration..."
+            bench set-config db_host "$DB_HOST" --site "$SITE_NAME"
+            bench set-config db_port "$DB_PORT" --site "$SITE_NAME"
+            bench set-config db_name "$DB_NAME" --site "$SITE_NAME"
+        fi
+        
+        # Update host_name to ensure correct URL generation in emails
+        echo "Updating site URL configuration..."
+        bench set-config host_name "$SITE_URL" --site "$SITE_NAME"
     fi
     
     exec bench start
@@ -75,6 +82,7 @@ fi
 
 bench --site "$SITE_NAME" install-app hrms
 bench --site "$SITE_NAME" set-config developer_mode 1
+bench --site "$SITE_NAME" set-config host_name "$SITE_URL"
 bench --site "$SITE_NAME" enable-scheduler
 bench --site "$SITE_NAME" clear-cache
 bench use "$SITE_NAME"

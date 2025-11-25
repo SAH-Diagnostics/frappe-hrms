@@ -214,13 +214,18 @@ jobs:
               server 127.0.0.1:9000 fail_timeout=0;
           }
 
+          # Main server block
+          # If you're using AWS Load Balancer for SSL termination, this listens on port 80
+          # If you want direct HTTPS on nginx, add SSL configuration below
           server {
               listen 80;
-              server_name _;
+              server_name dev-hrms.sahdiagnostics.com www.dev-hrms.sahdiagnostics.com _;
 
               client_max_body_size 50m;
               client_body_buffer_size 16k;
 
+              # Important: Set X-Forwarded-Proto to https to tell Frappe the external protocol
+              # This is critical for proper URL generation even with host_name configured
               location / {
                   proxy_pass http://frappe-server;
                   proxy_http_version 1.1;
@@ -229,7 +234,8 @@ jobs:
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Forwarded-Host $host;
                   proxy_read_timeout 300;
                   proxy_connect_timeout 300;
               }
@@ -242,7 +248,8 @@ jobs:
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Forwarded-Host $host;
               }
 
               location /assets {
@@ -250,7 +257,8 @@ jobs:
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Forwarded-Host $host;
               }
 
               location /files {
@@ -258,7 +266,8 @@ jobs:
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Forwarded-Host $host;
               }
           }
           NGINXCONF
