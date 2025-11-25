@@ -205,7 +205,20 @@ jobs:
           
           # Setup nginx reverse proxy
           echo "=== Configuring nginx ==="
-          sudo tee /etc/nginx/sites-available/frappe-hrms > /dev/null << 'NGINXCONF'
+          
+          # Check if SSL certificates exist
+          if [ -f "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ]; then
+            echo "✓ SSL certificates found, configuring HTTPS"
+            SSL_ENABLED=true
+          else
+            echo "⚠ SSL certificates not found, configuring HTTP only"
+            echo "Run 'sudo certbot --nginx -d dev-hrms.sahdiagnostics.com -d www.dev-hrms.sahdiagnostics.com' to enable HTTPS"
+            SSL_ENABLED=false
+          fi
+          
+          if [ "$SSL_ENABLED" = true ]; then
+            # Create nginx config with HTTPS
+            sudo tee /etc/nginx/sites-available/frappe-hrms > /dev/null << 'NGINXCONF'
           upstream frappe-server {
               server 127.0.0.1:8000 fail_timeout=0;
           }
@@ -214,18 +227,42 @@ jobs:
               server 127.0.0.1:9000 fail_timeout=0;
           }
 
-          # Main server block
-          # If you're using AWS Load Balancer for SSL termination, this listens on port 80
-          # If you want direct HTTPS on nginx, add SSL configuration below
+          # HTTP server - redirect to HTTPS
           server {
               listen 80;
-              server_name dev-hrms.sahdiagnostics.com www.dev-hrms.sahdiagnostics.com _;
+              server_name dev-hrms.sahdiagnostics.com www.dev-hrms.sahdiagnostics.com;
+              
+              # Allow certbot to renew certificates
+              location /.well-known/acme-challenge/ {
+                  root /var/www/certbot;
+              }
+              
+              # Redirect all other HTTP traffic to HTTPS
+              location / {
+                  return 301 https://$host$request_uri;
+              }
+          }
+
+          # HTTPS server
+          server {
+              listen 443 ssl http2;
+              server_name dev-hrms.sahdiagnostics.com www.dev-hrms.sahdiagnostics.com;
+
+              # SSL certificates managed by certbot
+              ssl_certificate /etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/privkey.pem;
+              
+              # SSL configuration
+              ssl_protocols TLSv1.2 TLSv1.3;
+              ssl_ciphers HIGH:!aNULL:!MD5;
+              ssl_prefer_server_ciphers on;
+              ssl_session_cache shared:SSL:10m;
+              ssl_session_timeout 10m;
 
               client_max_body_size 50m;
               client_body_buffer_size 16k;
 
-              # Important: Set X-Forwarded-Proto to https to tell Frappe the external protocol
-              # This is critical for proper URL generation even with host_name configured
+              # Proxy settings for Frappe
               location / {
                   proxy_pass http://frappe-server;
                   proxy_http_version 1.1;
@@ -271,6 +308,80 @@ jobs:
               }
           }
           NGINXCONF
+          else
+            # Create nginx config with HTTP only (for initial setup before SSL)
+            sudo tee /etc/nginx/sites-available/frappe-hrms > /dev/null << 'NGINXCONF'
+          upstream frappe-server {
+              server 127.0.0.1:8000 fail_timeout=0;
+          }
+
+          upstream socketio-server {
+              server 127.0.0.1:9000 fail_timeout=0;
+          }
+
+          # HTTP server (temporary - run certbot to enable HTTPS)
+          server {
+              listen 80;
+              server_name dev-hrms.sahdiagnostics.com www.dev-hrms.sahdiagnostics.com;
+
+              client_max_body_size 50m;
+              client_body_buffer_size 16k;
+              
+              # Allow certbot to validate domain
+              location /.well-known/acme-challenge/ {
+                  root /var/www/certbot;
+              }
+
+              location / {
+                  proxy_pass http://frappe-server;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Host $host;
+                  proxy_read_timeout 300;
+                  proxy_connect_timeout 300;
+              }
+
+              location /socket.io {
+                  proxy_pass http://socketio-server;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Host $host;
+              }
+
+              location /assets {
+                  proxy_pass http://frappe-server;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Host $host;
+              }
+
+              location /files {
+                  proxy_pass http://frappe-server;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_set_header X-Forwarded-Host $host;
+              }
+          }
+          NGINXCONF
+          fi
+          
+          # Ensure certbot webroot directory exists
+          sudo mkdir -p /var/www/certbot
+          sudo chown www-data:www-data /var/www/certbot
           
           # Enable the site
           sudo ln -sf /etc/nginx/sites-available/frappe-hrms /etc/nginx/sites-enabled/frappe-hrms
@@ -279,12 +390,31 @@ jobs:
           sudo rm -f /etc/nginx/sites-enabled/default
           
           # Test nginx configuration
-          sudo nginx -t
+          if sudo nginx -t; then
+            echo "✓ Nginx configuration is valid"
+          else
+            echo "✗ Nginx configuration test failed"
+            exit 1
+          fi
           
           # Reload nginx
           sudo systemctl reload nginx
           
           echo "=== Nginx configured and reloaded ==="
+          
+          # Display SSL status
+          if [ "$SSL_ENABLED" = true ]; then
+            echo "✅ HTTPS is ENABLED"
+            echo "Site is accessible at: https://dev-hrms.sahdiagnostics.com"
+          else
+            echo "⚠️  HTTPS is NOT ENABLED (certificates not found)"
+            echo "Site is accessible at: http://dev-hrms.sahdiagnostics.com"
+            echo ""
+            echo "To enable HTTPS, run these commands on the server:"
+            echo "  sudo apt-get install -y certbot python3-certbot-nginx"
+            echo "  sudo certbot --nginx -d dev-hrms.sahdiagnostics.com -d www.dev-hrms.sahdiagnostics.com"
+            echo "  sudo systemctl reload nginx"
+          fi
           
           # Clean up old Docker images
           echo "=== Cleaning up old Docker images ==="
@@ -297,6 +427,15 @@ jobs:
       - name: Deployment summary
         run: |
           echo "✅ Deployment completed successfully!"
-          echo "🌐 Access your application at: http://${{ steps.prepare.outputs.host }}"
+          echo ""
+          echo "🌐 Application URLs:"
+          echo "   Primary: https://dev-hrms.sahdiagnostics.com"
+          echo "   Fallback: http://${{ steps.prepare.outputs.host }}"
+          echo ""
           echo "📦 Deployed to: ${{ steps.prepare.outputs.remote_path }}"
+          echo ""
+          echo "ℹ️  If HTTPS is not working:"
+          echo "   1. SSH into the instance"
+          echo "   2. Run: cd /opt/frappe-hrms/deploy/lightsail && sudo bash setup-ssl.sh"
+          echo "   3. See deploy/lightsail/SSL-SETUP.md for detailed instructions"
 
