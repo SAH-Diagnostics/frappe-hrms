@@ -58,17 +58,26 @@ bench get-app hrms
 
 # Create site with appropriate database configuration
 if [ "$DB_HOST" != "mariadb" ]; then
-    # External database (production) - pass all config directly to new-site
+    # External database (production) - use master user directly without creating new users
     echo "Creating site with external database: $DB_HOST:$DB_PORT"
+    echo "Using master user: $DB_USER (will NOT create additional database users)"
+    
+    # Set environment variable to tell Frappe to skip user creation
+    # and use the root credentials directly
+    export FRAPPE_DB_USER="$DB_USER"
+    export FRAPPE_DB_PASSWORD="$DB_PASSWORD"
+    
+    # Create the site with root user acting as the db user
     bench new-site "$SITE_NAME" \
         --force \
         --db-host "$DB_HOST" \
         --db-port "$DB_PORT" \
         --db-name "$DB_NAME" \
+        --db-user "$DB_USER" \
+        --db-password "$DB_PASSWORD" \
         --mariadb-root-username "$DB_USER" \
         --mariadb-root-password "$DB_PASSWORD" \
-        --admin-password admin \
-        --no-mariadb-socket
+        --admin-password admin
 else
     # Local MariaDB container (development)
     echo "Creating site with local MariaDB"
@@ -76,11 +85,13 @@ else
     bench new-site "$SITE_NAME" \
         --force \
         --mariadb-root-password "$DB_PASSWORD" \
-        --admin-password admin \
-        --no-mariadb-socket
+        --admin-password admin
 fi
 
-bench --site "$SITE_NAME" install-app hrms
+# Install apps (if not already installed during new-site)
+bench --site "$SITE_NAME" install-app hrms || echo "HRMS already installed or will be installed"
+
+# Configure site
 bench --site "$SITE_NAME" set-config developer_mode 1
 bench --site "$SITE_NAME" set-config host_name "$SITE_URL"
 bench --site "$SITE_NAME" enable-scheduler
