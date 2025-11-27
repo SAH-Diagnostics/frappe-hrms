@@ -58,26 +58,32 @@ bench get-app hrms
 
 # Create site with appropriate database configuration
 if [ "$DB_HOST" != "mariadb" ]; then
-    # External database (production) - use master user directly without creating new users
+    # External database (RDS) - use master user directly, skip user creation
     echo "Creating site with external database: $DB_HOST:$DB_PORT"
-    echo "Using master user: $DB_USER (will NOT create additional database users)"
+    echo "Using master user directly: $DB_USER (no additional users will be created)"
     
-    # Set environment variable to tell Frappe to skip user creation
-    # and use the root credentials directly
-    export FRAPPE_DB_USER="$DB_USER"
-    export FRAPPE_DB_PASSWORD="$DB_PASSWORD"
+    # Write site config directly to bypass user creation
+    mkdir -p "sites/${SITE_NAME}"
     
-    # Create the site with root user acting as the db user
-    bench new-site "$SITE_NAME" \
-        --force \
-        --db-host "$DB_HOST" \
-        --db-port "$DB_PORT" \
-        --db-name "$DB_NAME" \
-        --db-user "$DB_USER" \
-        --db-password "$DB_PASSWORD" \
-        --mariadb-root-username "$DB_USER" \
-        --mariadb-root-password "$DB_PASSWORD" \
-        --admin-password admin
+    # Generate encryption key
+    ENCRYPTION_KEY=$(openssl rand -base64 32)
+    
+    cat > "sites/${SITE_NAME}/site_config.json" << EOF
+{
+    "db_host": "$DB_HOST",
+    "db_port": $DB_PORT,
+    "db_name": "$DB_NAME",
+    "db_user": "$DB_USER",
+    "db_password": "$DB_PASSWORD",
+    "db_type": "mariadb",
+    "encryption_key": "$ENCRYPTION_KEY"
+}
+EOF
+
+    echo "Site config created, initializing database schema..."
+    
+    # Initialize the database schema directly
+    bench --site "$SITE_NAME" reinstall --yes --admin-password admin
 else
     # Local MariaDB container (development)
     echo "Creating site with local MariaDB"
