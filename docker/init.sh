@@ -65,7 +65,7 @@ if [ "$DB_HOST" != "mariadb" ]; then
     # Generate encryption key
     ENCRYPTION_KEY=$(openssl rand -base64 32)
     
-    # Write common_site_config.json with root credentials
+    # Write common_site_config.json with root credentials and Redis config
     # This tells Frappe to use these credentials for all DB operations
     cat > "sites/common_site_config.json" << EOF
 {
@@ -73,7 +73,10 @@ if [ "$DB_HOST" != "mariadb" ]; then
     "db_port": $DB_PORT,
     "db_type": "mariadb",
     "root_login": "$DB_USER",
-    "root_password": "$DB_PASSWORD"
+    "root_password": "$DB_PASSWORD",
+    "redis_cache": "redis://redis:6379",
+    "redis_queue": "redis://redis:6379",
+    "redis_socketio": "redis://redis:6379"
 }
 EOF
 
