@@ -62,28 +62,58 @@ if [ "$DB_HOST" != "mariadb" ]; then
     echo "Creating site with external database: $DB_HOST:$DB_PORT"
     echo "Using master user directly: $DB_USER (no additional users will be created)"
     
-    # Write site config directly to bypass user creation
-    mkdir -p "sites/${SITE_NAME}"
-    
     # Generate encryption key
     ENCRYPTION_KEY=$(openssl rand -base64 32)
     
-    cat > "sites/${SITE_NAME}/site_config.json" << EOF
+    # Write common_site_config.json with root credentials
+    # This tells Frappe to use these credentials for all DB operations
+    cat > "sites/common_site_config.json" << EOF
 {
     "db_host": "$DB_HOST",
     "db_port": $DB_PORT,
+    "db_type": "mariadb",
+    "root_login": "$DB_USER",
+    "root_password": "$DB_PASSWORD"
+}
+EOF
+
+    # Write site-specific config
+    mkdir -p "sites/${SITE_NAME}"
+    cat > "sites/${SITE_NAME}/site_config.json" << EOF
+{
     "db_name": "$DB_NAME",
     "db_user": "$DB_USER",
     "db_password": "$DB_PASSWORD",
-    "db_type": "mariadb",
     "encryption_key": "$ENCRYPTION_KEY"
 }
 EOF
 
     echo "Site config created, initializing database schema..."
     
-    # Initialize the database schema directly
-    bench --site "$SITE_NAME" reinstall --yes --admin-password admin
+    # WORKAROUND: Patch Frappe to skip CREATE USER for RDS compatibility
+    # RDS doesn't allow CREATE USER even for master users
+    SETUP_DB_FILE="apps/frappe/frappe/database/mariadb/setup_db.py"
+    if [ -f "$SETUP_DB_FILE" ]; then
+        echo "Patching Frappe to skip user creation (RDS compatibility)..."
+        # Comment out the create_user and grant_privileges calls
+        sed -i 's/dbman.create_user/#dbman.create_user/g' "$SETUP_DB_FILE"
+        sed -i 's/dbman.grant_all_privileges/#dbman.grant_all_privileges/g' "$SETUP_DB_FILE"
+    fi
+    
+    # Now create the site - it will skip user creation due to the patch
+    bench new-site "$SITE_NAME" \
+        --force \
+        --no-mariadb-socket \
+        --db-host "$DB_HOST" \
+        --db-port "$DB_PORT" \
+        --db-name "$DB_NAME" \
+        --db-user "$DB_USER" \
+        --db-password "$DB_PASSWORD" \
+        --db-root-username "$DB_USER" \
+        --db-root-password "$DB_PASSWORD" \
+        --admin-password admin \
+        --install-app erpnext \
+        --install-app hrms
 else
     # Local MariaDB container (development)
     echo "Creating site with local MariaDB"
@@ -94,8 +124,10 @@ else
         --admin-password admin
 fi
 
-# Install apps (if not already installed during new-site)
-bench --site "$SITE_NAME" install-app hrms || echo "HRMS already installed or will be installed"
+# Install apps if not already installed during new-site (local dev only)
+if [ "$DB_HOST" = "mariadb" ]; then
+    bench --site "$SITE_NAME" install-app hrms || echo "HRMS already installed"
+fi
 
 # Configure site
 bench --site "$SITE_NAME" set-config developer_mode 1
