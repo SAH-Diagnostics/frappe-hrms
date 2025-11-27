@@ -90,20 +90,21 @@ EOF
 
     echo "Site config created, initializing database schema..."
     
-    # WORKAROUND: Patch Frappe to skip CREATE USER for RDS compatibility
-    # RDS doesn't allow CREATE USER even for master users
+    # WORKAROUND: Patch Frappe to skip privileged operations for RDS compatibility
+    # RDS doesn't allow CREATE USER, GRANT, or FLUSH PRIVILEGES for standard users
     SETUP_DB_FILE="apps/frappe/frappe/database/mariadb/setup_db.py"
     if [ -f "$SETUP_DB_FILE" ]; then
-        echo "Patching Frappe to skip user creation (RDS compatibility)..."
-        # Comment out the create_user and grant_privileges calls
+        echo "Patching Frappe for RDS compatibility (skipping user/privilege management)..."
+        # Comment out all privileged database operations
         sed -i 's/dbman.create_user/#dbman.create_user/g' "$SETUP_DB_FILE"
         sed -i 's/dbman.grant_all_privileges/#dbman.grant_all_privileges/g' "$SETUP_DB_FILE"
+        sed -i 's/dbman.flush_privileges/#dbman.flush_privileges/g' "$SETUP_DB_FILE"
     fi
     
     # Now create the site - it will skip user creation due to the patch
     bench new-site "$SITE_NAME" \
         --force \
-        --no-mariadb-socket \
+        --mariadb-user-host-login-scope='%' \
         --db-host "$DB_HOST" \
         --db-port "$DB_PORT" \
         --db-name "$DB_NAME" \
