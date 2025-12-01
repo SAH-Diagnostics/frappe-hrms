@@ -441,24 +441,84 @@ jobs:
           sudo mkdir -p /var/www/certbot
           sudo chown www-data:www-data /var/www/certbot
           
+          # Verify nginx config file was created
+          if [ ! -f /etc/nginx/sites-available/frappe-hrms ]; then
+            echo "✗ Error: nginx config file was not created!"
+            exit 1
+          fi
+          echo "✓ Nginx config file created at /etc/nginx/sites-available/frappe-hrms"
+          
           # Enable the site
           sudo ln -sf /etc/nginx/sites-available/frappe-hrms /etc/nginx/sites-enabled/frappe-hrms
           
           # Remove default nginx site if it exists
           sudo rm -f /etc/nginx/sites-enabled/default
           
+          # Verify symlink was created
+          if [ -L /etc/nginx/sites-enabled/frappe-hrms ]; then
+            echo "✓ Nginx site enabled"
+          else
+            echo "✗ Error: Failed to enable nginx site"
+            exit 1
+          fi
+          
+          # Install nginx if not present
+          if ! command -v nginx &> /dev/null; then
+            echo "Installing nginx..."
+            sudo apt-get update
+            sudo apt-get install -y nginx
+          fi
+          
           # Test nginx configuration
           if sudo nginx -t; then
             echo "✓ Nginx configuration is valid"
           else
             echo "✗ Nginx configuration test failed"
+            echo "Showing nginx error details:"
+            sudo nginx -t 2>&1
             exit 1
           fi
+          
+          # Ensure nginx is running
+          if ! sudo systemctl is-active --quiet nginx; then
+            echo "Starting nginx service..."
+            sudo systemctl start nginx
+          fi
+          
+          # Enable nginx to start on boot
+          sudo systemctl enable nginx
           
           # Reload nginx
           sudo systemctl reload nginx
           
           echo "=== Nginx configured and reloaded ==="
+          
+          # Verify nginx is running
+          echo "=== Verifying nginx status ==="
+          sudo systemctl status nginx --no-pager -l || true
+          
+          # Check if nginx is listening on ports 80 and 443
+          echo ""
+          echo "=== Checking listening ports ==="
+          sudo ss -tlnp | grep -E ':80|:443' || echo "⚠ Warning: nginx may not be listening on ports 80/443"
+          
+          # Verify frappe container port is accessible
+          echo ""
+          echo "=== Verifying frappe container connectivity ==="
+          if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000 | grep -q "200\|302\|301"; then
+            echo "✓ Frappe container is responding on port 8000"
+          else
+            echo "⚠ Warning: Frappe container may not be responding on port 8000"
+            echo "Checking docker container status:"
+            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps
+          fi
+          
+          # Check firewall status (if ufw is installed)
+          if command -v ufw &> /dev/null; then
+            echo ""
+            echo "=== Checking firewall status ==="
+            sudo ufw status | head -10
+          fi
           
           # Display SSL status
           if [ "$SSL_ENABLED" = true ]; then
@@ -491,6 +551,27 @@ jobs:
           echo "   Fallback: http://${{ steps.prepare.outputs.host }}"
           echo ""
           echo "📦 Deployed to: ${{ steps.prepare.outputs.remote_path }}"
+          echo ""
+          echo "🔍 Troubleshooting Connection Issues:"
+          echo ""
+          echo "If you see 'ERR_CONNECTION_REFUSED', check:"
+          echo ""
+          echo "1. AWS Lightsail Security Group:"
+          echo "   - Go to AWS Lightsail → Networking → Firewall"
+          echo "   - Ensure ports 80 (HTTP) and 443 (HTTPS) are open"
+          echo "   - Add rules: HTTP (port 80) and HTTPS (port 443) from Anywhere (0.0.0.0/0)"
+          echo ""
+          echo "2. Run Diagnostic Script (SSH into server and run):"
+          echo "   cd /opt/frappe-hrms"
+          echo "   chmod +x deploy/lightsail/diagnose.sh"
+          echo "   ./deploy/lightsail/diagnose.sh"
+          echo ""
+          echo "3. Manual Checks (SSH into server and run):"
+          echo "   sudo systemctl status nginx"
+          echo "   sudo nginx -t"
+          echo "   sudo ss -tlnp | grep -E ':80|:443'"
+          echo "   sudo docker compose -f /opt/frappe-hrms/docker/docker-compose.yml ps"
+          echo "   curl -I http://127.0.0.1:8000"
           echo ""
           echo "ℹ️  If HTTPS is not working:"
           echo "   1. SSH into the instance"
