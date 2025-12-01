@@ -206,10 +206,17 @@ jobs:
           # Setup nginx reverse proxy
           echo "=== Configuring nginx ==="
           
-          # Check if SSL certificates exist
-          if [ -f "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ]; then
-            echo "✓ SSL certificates found, configuring HTTPS"
-            SSL_ENABLED=true
+          # Check if SSL certificates exist (handle both files and symlinks)
+          # Let's Encrypt uses symlinks, so check for both -f (file) and -L (symlink)
+          if [ -f "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ] || [ -L "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ]; then
+            # Verify the certificate is actually readable (follows symlink)
+            if sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem"; then
+              echo "✓ SSL certificates found, configuring HTTPS"
+              SSL_ENABLED=true
+            else
+              echo "⚠ SSL certificate file exists but is not readable"
+              SSL_ENABLED=false
+            fi
           else
             echo "⚠ SSL certificates not found"
             echo "Attempting to obtain SSL certificates using setup-ssl.sh..."
@@ -225,10 +232,15 @@ jobs:
               echo "✗ deploy/lightsail/setup-ssl.sh not found, skipping automatic SSL setup"
             fi
 
-            # Re-check if SSL certificates now exist
-            if [ -f "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ]; then
-              echo "✓ SSL certificates obtained successfully, configuring HTTPS"
-              SSL_ENABLED=true
+            # Re-check if SSL certificates now exist (handle symlinks)
+            if [ -f "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ] || [ -L "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ]; then
+              if sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem"; then
+                echo "✓ SSL certificates obtained successfully, configuring HTTPS"
+                SSL_ENABLED=true
+              else
+                echo "⚠ SSL certificates exist but are not readable"
+                SSL_ENABLED=false
+              fi
             else
               echo "⚠ SSL certificates still not found after attempting setup, configuring HTTP only"
               echo "To enable HTTPS manually, run on the server:"
