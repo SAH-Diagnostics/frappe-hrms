@@ -70,7 +70,7 @@ jobs:
       - name: Prepare deployment context
         id: prepare
         run: |
-          python deploy/lightsail/prepare_context.py
+          python deploy/dev/prepare_context.py
 
       - name: Setup SSH key and test connection
         run: |
@@ -182,19 +182,19 @@ jobs:
           fi
           
           echo "=== Setting up environment file ==="
-          mkdir -p deploy/lightsail
-          mv /tmp/frappe.env deploy/lightsail/.env.remote
+          mkdir -p deploy/dev
+          mv /tmp/frappe.env deploy/dev/.env.remote
           
           # Stop existing containers
           echo "=== Stopping existing containers ==="
           if [ -f "${{ steps.prepare.outputs.compose_file }}" ]; then
-            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/lightsail/.env.remote down || true
+            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote down || true
           fi
           
           # Pull latest images and rebuild
           echo "=== Building and starting containers ==="
-          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/lightsail/.env.remote pull || true
-          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/lightsail/.env.remote up -d --build
+          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote pull || true
+          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote up -d --build
           
           echo "=== Waiting for services to be ready ==="
           sleep 15
@@ -203,311 +203,8 @@ jobs:
           echo "=== Container status ==="
           sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps
           
-          # Setup nginx reverse proxy
-          echo "=== Configuring nginx ==="
-          
-          # Check if SSL certificates exist and are valid (handle both files and symlinks)
-          # Let's Encrypt uses symlinks, so check for both -f (file) and -L (symlink)
-          SSL_ENABLED=false
-          
-          if [ -f "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ] || [ -L "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ]; then
-            # Verify the certificate is actually readable (follows symlink)
-            if sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem"; then
-              # Also check that the private key exists and is readable
-              if sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/privkey.pem"; then
-                # Verify certificate is not expired (basic check - certificate file should be non-empty and contain valid data)
-                CERT_SIZE=$(sudo stat -c%s "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" 2>/dev/null || echo "0")
-                if [ "$CERT_SIZE" -gt 100 ]; then
-                  echo "✓ SSL certificates found and appear valid, configuring HTTPS"
-                  SSL_ENABLED=true
-                else
-                  echo "⚠ SSL certificate file exists but appears invalid (too small)"
-                  SSL_ENABLED=false
-                fi
-              else
-                echo "⚠ SSL certificate found but private key is not readable"
-                SSL_ENABLED=false
-              fi
-            else
-              echo "⚠ SSL certificate file exists but is not readable"
-              SSL_ENABLED=false
-            fi
-          else
-            echo "⚠ SSL certificates not found"
-            echo "Attempting to obtain SSL certificates using setup-ssl.sh..."
-
-            # Ensure webroot directory exists for HTTP validation (also used by setup-ssl.sh)
-            sudo mkdir -p /var/www/certbot
-            sudo chown www-data:www-data /var/www/certbot
-
-            if [ -f "deploy/lightsail/setup-ssl.sh" ]; then
-              echo "Running deploy/lightsail/setup-ssl.sh with sudo"
-              sudo bash deploy/lightsail/setup-ssl.sh || echo "✗ setup-ssl.sh failed, continuing with HTTP only"
-            else
-              echo "✗ deploy/lightsail/setup-ssl.sh not found, skipping automatic SSL setup"
-            fi
-
-            # Re-check if SSL certificates now exist (handle symlinks)
-            if [ -f "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ] || [ -L "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ]; then
-              if sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" && sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/privkey.pem"; then
-                CERT_SIZE=$(sudo stat -c%s "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" 2>/dev/null || echo "0")
-                if [ "$CERT_SIZE" -gt 100 ]; then
-                  echo "✓ SSL certificates obtained successfully, configuring HTTPS"
-                  SSL_ENABLED=true
-                else
-                  echo "⚠ SSL certificates exist but appear invalid"
-                  SSL_ENABLED=false
-                fi
-              else
-                echo "⚠ SSL certificates exist but are not readable"
-                SSL_ENABLED=false
-              fi
-            else
-              echo "⚠ SSL certificates still not found after attempting setup, configuring HTTP only"
-              echo "To enable HTTPS manually, run on the server:"
-              echo "  cd /opt/frappe-hrms/deploy/lightsail && sudo bash setup-ssl.sh"
-              SSL_ENABLED=false
-            fi
-          fi
-          
-          # Final verification: if SSL is enabled, verify nginx can actually use it
-          if [ "$SSL_ENABLED" = true ]; then
-            # Create a temporary nginx config to test SSL
-            TEMP_CONFIG="/tmp/nginx-ssl-test.conf"
-            sudo tee "$TEMP_CONFIG" > /dev/null << 'TEMPEOF'
-          upstream frappe-server {
-              server 127.0.0.1:8000 fail_timeout=0;
-          }
-          server {
-              listen 443 ssl http2;
-              server_name dev-hrms.sahdiagnostics.com;
-              ssl_certificate /etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem;
-              ssl_certificate_key /etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/privkey.pem;
-              location / { return 200 "test"; }
-          }
-          TEMPEOF
-            if sudo nginx -t -c "$TEMP_CONFIG" &> /dev/null; then
-              echo "✓ SSL configuration test passed"
-              rm -f "$TEMP_CONFIG"
-            else
-              echo "⚠ SSL configuration test failed, falling back to HTTP only"
-              SSL_ENABLED=false
-              rm -f "$TEMP_CONFIG"
-            fi
-          fi
-          
-          if [ "$SSL_ENABLED" = true ]; then
-            # Create nginx config with HTTPS
-            sudo tee /etc/nginx/sites-available/frappe-hrms > /dev/null << 'NGINXCONF'
-          upstream frappe-server {
-              server 127.0.0.1:8000 fail_timeout=0;
-          }
-
-          upstream socketio-server {
-              server 127.0.0.1:9000 fail_timeout=0;
-          }
-
-          # HTTP server - redirect to HTTPS
-          server {
-              listen 80;
-              listen [::]:80;
-              server_name dev-hrms.sahdiagnostics.com www.dev-hrms.sahdiagnostics.com;
-              
-              # Allow certbot to renew certificates
-              location /.well-known/acme-challenge/ {
-                  root /var/www/certbot;
-              }
-              
-              # Redirect all other HTTP traffic to HTTPS
-              location / {
-                  return 301 https://$host$request_uri;
-              }
-          }
-
-          # HTTPS server
-          server {
-              listen 443 ssl http2;
-              listen [::]:443 ssl http2;
-              server_name dev-hrms.sahdiagnostics.com www.dev-hrms.sahdiagnostics.com;
-
-              # SSL certificates managed by certbot
-              ssl_certificate /etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem;
-              ssl_certificate_key /etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/privkey.pem;
-              
-              # SSL configuration
-              ssl_protocols TLSv1.2 TLSv1.3;
-              ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-              ssl_prefer_server_ciphers off;
-              ssl_session_cache shared:SSL:10m;
-              ssl_session_timeout 10m;
-              ssl_session_tickets off;
-
-              # Security headers
-              add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-              add_header X-Frame-Options "SAMEORIGIN" always;
-              add_header X-Content-Type-Options "nosniff" always;
-              add_header X-XSS-Protection "1; mode=block" always;
-
-              client_max_body_size 50m;
-              client_body_buffer_size 16k;
-              client_body_timeout 60s;
-              client_header_timeout 60s;
-
-              # Proxy settings for Frappe
-              location / {
-                  proxy_pass http://frappe-server;
-                  proxy_http_version 1.1;
-                  proxy_set_header Upgrade $http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Host $host;
-                  proxy_set_header X-Forwarded-Port $server_port;
-                  proxy_read_timeout 300;
-                  proxy_connect_timeout 300;
-                  proxy_send_timeout 300;
-                  proxy_buffering off;
-                  proxy_cache_bypass $http_upgrade;
-              }
-
-              location /socket.io {
-                  proxy_pass http://socketio-server;
-                  proxy_http_version 1.1;
-                  proxy_set_header Upgrade $http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Host $host;
-                  proxy_read_timeout 86400;
-                  proxy_send_timeout 86400;
-                  proxy_buffering off;
-              }
-
-              location /assets {
-                  proxy_pass http://frappe-server;
-                  proxy_http_version 1.1;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Host $host;
-                  proxy_cache_valid 200 60m;
-                  expires 1y;
-                  add_header Cache-Control "public, immutable";
-              }
-
-              location /files {
-                  proxy_pass http://frappe-server;
-                  proxy_http_version 1.1;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Host $host;
-                  proxy_read_timeout 300;
-                  proxy_send_timeout 300;
-              }
-          }
-          NGINXCONF
-          else
-            # Create nginx config with HTTP only (for initial setup before SSL)
-            sudo tee /etc/nginx/sites-available/frappe-hrms > /dev/null << 'NGINXCONF'
-          upstream frappe-server {
-              server 127.0.0.1:8000 fail_timeout=0;
-          }
-
-          upstream socketio-server {
-              server 127.0.0.1:9000 fail_timeout=0;
-          }
-
-          # HTTP server (temporary - run certbot to enable HTTPS)
-          server {
-              listen 80;
-              server_name dev-hrms.sahdiagnostics.com www.dev-hrms.sahdiagnostics.com;
-
-              client_max_body_size 50m;
-              client_body_buffer_size 16k;
-              
-              # Allow certbot to validate domain
-              location /.well-known/acme-challenge/ {
-                  root /var/www/certbot;
-              }
-
-              location / {
-                  proxy_pass http://frappe-server;
-                  proxy_http_version 1.1;
-                  proxy_set_header Upgrade $http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Host $host;
-                  proxy_read_timeout 300;
-                  proxy_connect_timeout 300;
-              }
-
-              location /socket.io {
-                  proxy_pass http://socketio-server;
-                  proxy_http_version 1.1;
-                  proxy_set_header Upgrade $http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Host $host;
-              }
-
-              location /assets {
-                  proxy_pass http://frappe-server;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Host $host;
-              }
-
-              location /files {
-                  proxy_pass http://frappe-server;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  proxy_set_header X-Forwarded-Host $host;
-              }
-          }
-          NGINXCONF
-          fi
-          
-          # Ensure certbot webroot directory exists
-          sudo mkdir -p /var/www/certbot
-          sudo chown www-data:www-data /var/www/certbot
-          
-          # Verify nginx config file was created
-          if [ ! -f /etc/nginx/sites-available/frappe-hrms ]; then
-            echo "✗ Error: nginx config file was not created!"
-            exit 1
-          fi
-          echo "✓ Nginx config file created at /etc/nginx/sites-available/frappe-hrms"
-          
-          # Enable the site
-          sudo ln -sf /etc/nginx/sites-available/frappe-hrms /etc/nginx/sites-enabled/frappe-hrms
-          
-          # Remove default nginx site if it exists
-          sudo rm -f /etc/nginx/sites-enabled/default
-          
-          # Verify symlink was created
-          if [ -L /etc/nginx/sites-enabled/frappe-hrms ]; then
-            echo "✓ Nginx site enabled"
-          else
-            echo "✗ Error: Failed to enable nginx site"
-            exit 1
-          fi
+          # Setup nginx reverse proxy and SSL certificates
+          echo "=== Configuring nginx and SSL certificates ==="
           
           # Install nginx if not present
           if ! command -v nginx &> /dev/null; then
@@ -516,9 +213,143 @@ jobs:
             sudo apt-get install -y nginx
           fi
           
-          # Test nginx configuration
+          # Install certbot if not present
+          if ! command -v certbot &> /dev/null; then
+            echo "Installing certbot..."
+            sudo apt-get update
+            sudo apt-get install -y certbot python3-certbot-nginx
+          fi
+          
+          # Ensure certbot webroot directory exists
+          sudo mkdir -p /var/www/certbot
+          sudo chown www-data:www-data /var/www/certbot
+          
+          # Domain configuration
+          DOMAIN="dev-hrms.sahdiagnostics.com"
+          WWW_DOMAIN="www.dev-hrms.sahdiagnostics.com"
+          CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+          KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+          
+          # Function to check if certificate is valid and not expired
+          check_certificate_valid() {
+            if [ ! -f "$CERT_PATH" ] && [ ! -L "$CERT_PATH" ]; then
+              return 1
+            fi
+            
+            if ! sudo test -r "$CERT_PATH" || ! sudo test -r "$KEY_PATH"; then
+              return 1
+            fi
+            
+            # Check if certificate is expired or expires within 30 days
+            # Using openssl to check expiration (returns 0 if valid, 1 if expired/expiring soon)
+            if sudo openssl x509 -checkend 2592000 -noout -in "$CERT_PATH" 2>/dev/null; then
+              return 0
+            else
+              return 1
+            fi
+          }
+          
+          # Check certificate status and obtain/renew if needed
+          CERT_NEEDED=false
+          if check_certificate_valid; then
+            echo "✓ SSL certificate exists and is valid"
+            CERT_EXPIRY=$(sudo openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)
+            echo "  Certificate expires: $CERT_EXPIRY"
+          else
+            echo "⚠ SSL certificate is missing, expired, or expiring soon"
+            CERT_NEEDED=true
+          fi
+          
+          # Deploy nginx config first (needed for certbot webroot validation)
+          echo "=== Deploying nginx configuration ==="
+          if [ ! -f "deploy/dev/nginx.conf" ]; then
+            echo "✗ Error: deploy/dev/nginx.conf not found!"
+            exit 1
+          fi
+          
+          # Copy nginx config to system location
+          sudo cp deploy/dev/nginx.conf /etc/nginx/sites-available/frappe-hrms
+          
+          # Enable the site
+          sudo ln -sf /etc/nginx/sites-available/frappe-hrms /etc/nginx/sites-enabled/frappe-hrms
+          sudo rm -f /etc/nginx/sites-enabled/default
+          
+          # Start nginx if not running (needed for certbot webroot validation)
+          if ! sudo systemctl is-active --quiet nginx; then
+            echo "Starting nginx for certificate validation..."
+            sudo systemctl start nginx
+          else
+            # Test nginx config before reloading
+            if sudo nginx -t; then
+              sudo systemctl reload nginx
+            else
+              echo "⚠ Nginx config test failed, but continuing for certificate setup"
+            fi
+          fi
+          
+          # Obtain or renew SSL certificate
+          if [ "$CERT_NEEDED" = true ]; then
+            echo "=== Obtaining SSL certificate ==="
+            
+            # Use certbot webroot method (works even if nginx is running)
+            sudo certbot certonly --webroot \
+              -w /var/www/certbot \
+              -d "$DOMAIN" \
+              -d "$WWW_DOMAIN" \
+              --non-interactive \
+              --agree-tos \
+              --email admin@sahdiagnostics.com \
+              --keep-until-expiring || {
+              
+              echo "⚠ Certbot webroot method failed, trying standalone method..."
+              # Stop nginx temporarily for standalone mode
+              sudo systemctl stop nginx
+              sudo certbot certonly --standalone \
+                -d "$DOMAIN" \
+                -d "$WWW_DOMAIN" \
+                --non-interactive \
+                --agree-tos \
+                --email admin@sahdiagnostics.com
+              # Restart nginx
+              sudo systemctl start nginx
+            }
+            
+            # Verify certificate was obtained
+            if check_certificate_valid; then
+              echo "✓ SSL certificate obtained successfully"
+              CERT_EXPIRY=$(sudo openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)
+              echo "  Certificate expires: $CERT_EXPIRY"
+            else
+              echo "✗ Error: Failed to obtain valid SSL certificate"
+              echo "  Continuing with deployment, but HTTPS may not work"
+            fi
+          else
+            # Certificate exists and is valid, but try to renew if close to expiration
+            echo "=== Checking if certificate renewal is needed ==="
+            # Renew if certificate expires within 30 days
+            if ! sudo openssl x509 -checkend 2592000 -noout -in "$CERT_PATH" 2>/dev/null; then
+              echo "Certificate expires soon, attempting renewal..."
+              sudo certbot renew --quiet --nginx || {
+                echo "⚠ Certificate renewal failed, but existing certificate is still valid"
+              }
+            fi
+          fi
+          
+          # Set up automatic certificate renewal cron job
+          echo "=== Setting up automatic certificate renewal ==="
+          CRON_JOB="0 0,12 * * * /usr/bin/certbot renew --quiet --nginx && /usr/bin/systemctl reload nginx"
+          if ! sudo crontab -l 2>/dev/null | grep -q "certbot renew"; then
+            (sudo crontab -l 2>/dev/null; echo "$CRON_JOB") | sudo crontab -
+            echo "✓ Certbot renewal cron job added"
+          else
+            echo "✓ Certbot renewal cron job already exists"
+          fi
+          
+          # Final nginx configuration test and reload
+          echo "=== Final nginx configuration ==="
           if sudo nginx -t; then
             echo "✓ Nginx configuration is valid"
+            sudo systemctl reload nginx
           else
             echo "✗ Nginx configuration test failed"
             echo "Showing nginx error details:"
@@ -526,17 +357,23 @@ jobs:
             exit 1
           fi
           
-          # Ensure nginx is running
-          if ! sudo systemctl is-active --quiet nginx; then
-            echo "Starting nginx service..."
-            sudo systemctl start nginx
-          fi
-          
           # Enable nginx to start on boot
           sudo systemctl enable nginx
           
-          # Reload nginx
-          sudo systemctl reload nginx
+          # Verify nginx config file was created
+          if [ ! -f /etc/nginx/sites-available/frappe-hrms ]; then
+            echo "✗ Error: nginx config file was not created!"
+            exit 1
+          fi
+          echo "✓ Nginx config file deployed from deploy/dev/nginx.conf"
+          
+          # Verify symlink was created
+          if [ -L /etc/nginx/sites-enabled/frappe-hrms ]; then
+            echo "✓ Nginx site enabled"
+          else
+            echo "✗ Error: Failed to enable nginx site"
+            exit 1
+          fi
           
           echo "=== Nginx configured and reloaded ==="
           
@@ -568,17 +405,18 @@ jobs:
           fi
           
           # Display SSL status
-          if [ "$SSL_ENABLED" = true ]; then
+          if check_certificate_valid; then
+            CERT_EXPIRY=$(sudo openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)
+            echo ""
             echo "✅ HTTPS is ENABLED"
             echo "Site is accessible at: https://dev-hrms.sahdiagnostics.com"
+            echo "Certificate expires: $CERT_EXPIRY"
+            echo "HTTP traffic will be automatically redirected to HTTPS"
           else
-            echo "⚠️  HTTPS is NOT ENABLED (certificates not found)"
-            echo "Site is accessible at: http://dev-hrms.sahdiagnostics.com"
             echo ""
-            echo "To enable HTTPS, run these commands on the server:"
-            echo "  sudo apt-get install -y certbot python3-certbot-nginx"
-            echo "  sudo certbot --nginx -d dev-hrms.sahdiagnostics.com -d www.dev-hrms.sahdiagnostics.com"
-            echo "  sudo systemctl reload nginx"
+            echo "⚠️  HTTPS certificate is missing or invalid"
+            echo "Site may be accessible at: http://dev-hrms.sahdiagnostics.com"
+            echo "Certificate setup may have failed - check logs above"
           fi
           
           # Clean up old Docker images
@@ -608,12 +446,7 @@ jobs:
           echo "   - Ensure ports 80 (HTTP) and 443 (HTTPS) are open"
           echo "   - Add rules: HTTP (port 80) and HTTPS (port 443) from Anywhere (0.0.0.0/0)"
           echo ""
-          echo "2. Run Diagnostic Script (SSH into server and run):"
-          echo "   cd /opt/frappe-hrms"
-          echo "   chmod +x deploy/lightsail/diagnose.sh"
-          echo "   ./deploy/lightsail/diagnose.sh"
-          echo ""
-          echo "3. Manual Checks (SSH into server and run):"
+          echo "2. Manual Checks (SSH into server and run):"
           echo "   sudo systemctl status nginx"
           echo "   sudo nginx -t"
           echo "   sudo ss -tlnp | grep -E ':80|:443'"
@@ -621,7 +454,7 @@ jobs:
           echo "   curl -I http://127.0.0.1:8000"
           echo ""
           echo "ℹ️  If HTTPS is not working:"
-          echo "   1. SSH into the instance"
-          echo "   2. Run: cd /opt/frappe-hrms/deploy/lightsail && sudo bash setup-ssl.sh"
-          echo "   3. See deploy/lightsail/SSL-SETUP.md for detailed instructions"
+          echo "   1. Check certificate status: sudo certbot certificates"
+          echo "   2. Manually renew if needed: sudo certbot renew --nginx"
+          echo "   3. Check nginx logs: sudo tail -f /var/log/nginx/error.log"
 

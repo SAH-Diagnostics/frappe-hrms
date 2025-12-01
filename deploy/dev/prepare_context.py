@@ -143,7 +143,7 @@ def main() -> None:
     key_path.chmod(0o600)
 
     env_content = secret.get("env_file_content", "")
-    env_path = pathlib.Path("deploy/lightsail/.env.remote")
+    env_path = pathlib.Path("deploy/dev/.env.remote")
     env_path.parent.mkdir(parents=True, exist_ok=True)
     env_path.write_text(env_content, encoding="utf-8")
 
@@ -157,7 +157,7 @@ def main() -> None:
         "remote_path": secret["remote_project_path"],
         "port": lightsail_port,
         "compose_file": compose_file,
-        "env_file": "deploy/lightsail/.env.remote",
+        "env_file": "deploy/dev/.env.remote",
         "env_content": env_content,
     }
 
