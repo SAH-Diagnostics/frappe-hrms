@@ -44,6 +44,9 @@ if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
     if site_exists; then
         echo "Site ${SITE_NAME} already exists, applying configuration and migrations..."
 
+        # Ensure logs directory exists (required for Frappe logging)
+        mkdir -p "sites/${SITE_NAME}/logs"
+
         if [ "$DB_HOST" != "mariadb" ]; then
             echo "Updating database configuration..."
             bench --site "$SITE_NAME" set-config db_host "$DB_HOST"
@@ -86,6 +89,8 @@ bench get-app hrms
 
 if site_exists; then
     echo "Site ${SITE_NAME} already exists in freshly created bench."
+    # Ensure logs directory exists (required for Frappe logging)
+    mkdir -p "sites/${SITE_NAME}/logs"
     echo "Running migrations instead of creating a new site..."
     bench --site "$SITE_NAME" migrate
 else
@@ -129,6 +134,9 @@ EOF
 }
 EOF
             fi
+
+            # Ensure logs directory exists (required for Frappe logging)
+            mkdir -p "sites/${SITE_NAME}/logs"
 
             echo "Running migrations against existing external database..."
             bench --site "$SITE_NAME" migrate
