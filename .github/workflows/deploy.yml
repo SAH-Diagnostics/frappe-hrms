@@ -211,9 +211,30 @@ jobs:
             echo "✓ SSL certificates found, configuring HTTPS"
             SSL_ENABLED=true
           else
-            echo "⚠ SSL certificates not found, configuring HTTP only"
-            echo "Run 'sudo certbot --nginx -d dev-hrms.sahdiagnostics.com -d www.dev-hrms.sahdiagnostics.com' to enable HTTPS"
-            SSL_ENABLED=false
+            echo "⚠ SSL certificates not found"
+            echo "Attempting to obtain SSL certificates using setup-ssl.sh..."
+
+            # Ensure webroot directory exists for HTTP validation (also used by setup-ssl.sh)
+            sudo mkdir -p /var/www/certbot
+            sudo chown www-data:www-data /var/www/certbot
+
+            if [ -f "deploy/lightsail/setup-ssl.sh" ]; then
+              echo "Running deploy/lightsail/setup-ssl.sh with sudo"
+              sudo bash deploy/lightsail/setup-ssl.sh || echo "✗ setup-ssl.sh failed, continuing with HTTP only"
+            else
+              echo "✗ deploy/lightsail/setup-ssl.sh not found, skipping automatic SSL setup"
+            fi
+
+            # Re-check if SSL certificates now exist
+            if [ -f "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ]; then
+              echo "✓ SSL certificates obtained successfully, configuring HTTPS"
+              SSL_ENABLED=true
+            else
+              echo "⚠ SSL certificates still not found after attempting setup, configuring HTTP only"
+              echo "To enable HTTPS manually, run on the server:"
+              echo "  cd /opt/frappe-hrms/deploy/lightsail && sudo bash setup-ssl.sh"
+              SSL_ENABLED=false
+            fi
           fi
           
           if [ "$SSL_ENABLED" = true ]; then
@@ -230,6 +251,7 @@ jobs:
           # HTTP server - redirect to HTTPS
           server {
               listen 80;
+              listen [::]:80;
               server_name dev-hrms.sahdiagnostics.com www.dev-hrms.sahdiagnostics.com;
               
               # Allow certbot to renew certificates
@@ -246,6 +268,7 @@ jobs:
           # HTTPS server
           server {
               listen 443 ssl http2;
+              listen [::]:443 ssl http2;
               server_name dev-hrms.sahdiagnostics.com www.dev-hrms.sahdiagnostics.com;
 
               # SSL certificates managed by certbot
@@ -254,13 +277,22 @@ jobs:
               
               # SSL configuration
               ssl_protocols TLSv1.2 TLSv1.3;
-              ssl_ciphers HIGH:!aNULL:!MD5;
-              ssl_prefer_server_ciphers on;
+              ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+              ssl_prefer_server_ciphers off;
               ssl_session_cache shared:SSL:10m;
               ssl_session_timeout 10m;
+              ssl_session_tickets off;
+
+              # Security headers
+              add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+              add_header X-Frame-Options "SAMEORIGIN" always;
+              add_header X-Content-Type-Options "nosniff" always;
+              add_header X-XSS-Protection "1; mode=block" always;
 
               client_max_body_size 50m;
               client_body_buffer_size 16k;
+              client_body_timeout 60s;
+              client_header_timeout 60s;
 
               # Proxy settings for Frappe
               location / {
@@ -271,10 +303,14 @@ jobs:
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Forwarded-Proto $scheme;
                   proxy_set_header X-Forwarded-Host $host;
+                  proxy_set_header X-Forwarded-Port $server_port;
                   proxy_read_timeout 300;
                   proxy_connect_timeout 300;
+                  proxy_send_timeout 300;
+                  proxy_buffering off;
+                  proxy_cache_bypass $http_upgrade;
               }
 
               location /socket.io {
@@ -285,26 +321,36 @@ jobs:
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Forwarded-Proto $scheme;
                   proxy_set_header X-Forwarded-Host $host;
+                  proxy_read_timeout 86400;
+                  proxy_send_timeout 86400;
+                  proxy_buffering off;
               }
 
               location /assets {
                   proxy_pass http://frappe-server;
+                  proxy_http_version 1.1;
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Forwarded-Proto $scheme;
                   proxy_set_header X-Forwarded-Host $host;
+                  proxy_cache_valid 200 60m;
+                  expires 1y;
+                  add_header Cache-Control "public, immutable";
               }
 
               location /files {
                   proxy_pass http://frappe-server;
+                  proxy_http_version 1.1;
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_set_header X-Forwarded-Proto $scheme;
                   proxy_set_header X-Forwarded-Host $host;
+                  proxy_read_timeout 300;
+                  proxy_send_timeout 300;
               }
           }
           NGINXCONF
