@@ -206,13 +206,28 @@ jobs:
           # Setup nginx reverse proxy
           echo "=== Configuring nginx ==="
           
-          # Check if SSL certificates exist (handle both files and symlinks)
+          # Check if SSL certificates exist and are valid (handle both files and symlinks)
           # Let's Encrypt uses symlinks, so check for both -f (file) and -L (symlink)
+          SSL_ENABLED=false
+          
           if [ -f "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ] || [ -L "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ]; then
             # Verify the certificate is actually readable (follows symlink)
             if sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem"; then
-              echo "✓ SSL certificates found, configuring HTTPS"
-              SSL_ENABLED=true
+              # Also check that the private key exists and is readable
+              if sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/privkey.pem"; then
+                # Verify certificate is not expired (basic check - certificate file should be non-empty and contain valid data)
+                CERT_SIZE=$(sudo stat -c%s "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" 2>/dev/null || echo "0")
+                if [ "$CERT_SIZE" -gt 100 ]; then
+                  echo "✓ SSL certificates found and appear valid, configuring HTTPS"
+                  SSL_ENABLED=true
+                else
+                  echo "⚠ SSL certificate file exists but appears invalid (too small)"
+                  SSL_ENABLED=false
+                fi
+              else
+                echo "⚠ SSL certificate found but private key is not readable"
+                SSL_ENABLED=false
+              fi
             else
               echo "⚠ SSL certificate file exists but is not readable"
               SSL_ENABLED=false
@@ -234,9 +249,15 @@ jobs:
 
             # Re-check if SSL certificates now exist (handle symlinks)
             if [ -f "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ] || [ -L "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" ]; then
-              if sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem"; then
-                echo "✓ SSL certificates obtained successfully, configuring HTTPS"
-                SSL_ENABLED=true
+              if sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" && sudo test -r "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/privkey.pem"; then
+                CERT_SIZE=$(sudo stat -c%s "/etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem" 2>/dev/null || echo "0")
+                if [ "$CERT_SIZE" -gt 100 ]; then
+                  echo "✓ SSL certificates obtained successfully, configuring HTTPS"
+                  SSL_ENABLED=true
+                else
+                  echo "⚠ SSL certificates exist but appear invalid"
+                  SSL_ENABLED=false
+                fi
               else
                 echo "⚠ SSL certificates exist but are not readable"
                 SSL_ENABLED=false
@@ -246,6 +267,32 @@ jobs:
               echo "To enable HTTPS manually, run on the server:"
               echo "  cd /opt/frappe-hrms/deploy/lightsail && sudo bash setup-ssl.sh"
               SSL_ENABLED=false
+            fi
+          fi
+          
+          # Final verification: if SSL is enabled, verify nginx can actually use it
+          if [ "$SSL_ENABLED" = true ]; then
+            # Create a temporary nginx config to test SSL
+            TEMP_CONFIG="/tmp/nginx-ssl-test.conf"
+            sudo tee "$TEMP_CONFIG" > /dev/null << 'TEMPEOF'
+          upstream frappe-server {
+              server 127.0.0.1:8000 fail_timeout=0;
+          }
+          server {
+              listen 443 ssl http2;
+              server_name dev-hrms.sahdiagnostics.com;
+              ssl_certificate /etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/dev-hrms.sahdiagnostics.com/privkey.pem;
+              location / { return 200 "test"; }
+          }
+          TEMPEOF
+            if sudo nginx -t -c "$TEMP_CONFIG" &> /dev/null; then
+              echo "✓ SSL configuration test passed"
+              rm -f "$TEMP_CONFIG"
+            else
+              echo "⚠ SSL configuration test failed, falling back to HTTP only"
+              SSL_ENABLED=false
+              rm -f "$TEMP_CONFIG"
             fi
           fi
           
