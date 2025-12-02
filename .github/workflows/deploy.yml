@@ -201,7 +201,29 @@ jobs:
           
           # Check container status
           echo "=== Container status ==="
-          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps
+          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -a
+          
+          # Check frappe container logs immediately after startup
+          echo ""
+          echo "=== Checking frappe container startup logs ==="
+          FRAPPE_CONTAINER=$(sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -q frappe 2>/dev/null || echo "")
+          if [ -n "$FRAPPE_CONTAINER" ]; then
+            echo "Frappe container ID: $FRAPPE_CONTAINER"
+            CONTAINER_STATUS=$(sudo docker inspect -f '{{.State.Status}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
+            echo "Container status: $CONTAINER_STATUS"
+            if [ "$CONTAINER_STATUS" = "exited" ] || [ "$CONTAINER_STATUS" = "dead" ]; then
+              EXIT_CODE=$(sudo docker inspect -f '{{.State.ExitCode}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
+              echo "⚠ Container exited with code: $EXIT_CODE"
+              echo "Last 100 lines of logs:"
+              sudo docker logs "$FRAPPE_CONTAINER" --tail 100 2>&1 || true
+            elif [ "$CONTAINER_STATUS" = "running" ]; then
+              echo "✓ Container is running"
+              echo "Last 50 lines of logs:"
+              sudo docker logs "$FRAPPE_CONTAINER" --tail 50 2>&1 || true
+            fi
+          else
+            echo "⚠ Frappe container not found"
+          fi
           
           # Setup nginx reverse proxy and SSL certificates
           echo "=== Configuring nginx and SSL certificates ==="

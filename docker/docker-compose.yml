@@ -1,4 +1,3 @@
-version: "3.8" # Updated version
 services:
   # MariaDB is kept for local development
   # For production, use external PostgreSQL via environment variables
