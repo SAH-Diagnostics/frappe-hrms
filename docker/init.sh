@@ -60,23 +60,44 @@ configure_bucket_storage() {
 if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
     echo "Bench already exists, reusing existing setup"
     cd /home/frappe/frappe-bench
+else
+    echo "Creating new bench..."
 
-    if site_exists; then
-        echo "Site ${SITE_NAME} already exists, applying configuration and migrations..."
+    export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 
-        # Ensure required directories exist (logs and file storage)
-        mkdir -p "sites/${SITE_NAME}/logs"
-        mkdir -p "sites/${SITE_NAME}/public/files"
-        mkdir -p "sites/${SITE_NAME}/private/files"
+    bench init --skip-redis-config-generation frappe-bench
 
-        if [ "$DB_HOST" != "mariadb" ]; then
-            echo "Updating database configuration..."
+    cd frappe-bench
 
-            # Ensure sites directory exists
-            mkdir -p sites
+    # Configure Redis (required for all deployments)
+    bench set-redis-cache-host redis://redis:6379
+    bench set-redis-queue-host redis://redis:6379
+    bench set-redis-socketio-host redis://redis:6379
 
-            # ALWAYS update common_site_config.json to ensure correct external DB settings
-            cat > "sites/common_site_config.json" << EOF
+    # Remove redis, watch from Procfile
+    sed -i '/redis/d' ./Procfile
+    sed -i '/watch/d' ./Procfile
+
+    bench get-app erpnext
+    bench get-app hrms
+fi
+
+if site_exists; then
+    echo "Site ${SITE_NAME} already exists, applying configuration and migrations..."
+
+    # Ensure required directories exist (logs and file storage)
+    mkdir -p "sites/${SITE_NAME}/logs"
+    mkdir -p "sites/${SITE_NAME}/public/files"
+    mkdir -p "sites/${SITE_NAME}/private/files"
+
+    if [ "$DB_HOST" != "mariadb" ]; then
+        echo "Updating database configuration..."
+
+        # Ensure sites directory exists
+        mkdir -p sites
+
+        # ALWAYS update common_site_config.json to ensure correct external DB settings
+        cat > "sites/common_site_config.json" << EOF
 {
     "db_host": "$DB_HOST",
     "db_port": $DB_PORT,
@@ -89,57 +110,15 @@ if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
 }
 EOF
 
-            bench --site "$SITE_NAME" set-config db_host "$DB_HOST"
-            bench --site "$SITE_NAME" set-config db_port "$DB_PORT"
-            bench --site "$SITE_NAME" set-config db_name "$DB_NAME"
-        fi
-
-        echo "Updating site URL configuration..."
-        bench --site "$SITE_NAME" set-config host_name "$SITE_URL"
-
-        echo "Running database migrations..."
-        bench --site "$SITE_NAME" migrate
-
-        # Ensure bucket configuration is applied even when bench/site already exist
-        configure_bucket_storage
-
-        bench --site "$SITE_NAME" enable-scheduler
-        bench --site "$SITE_NAME" clear-cache
-
-        bench use "$SITE_NAME"
-        exec bench start
+        bench --site "$SITE_NAME" set-config db_host "$DB_HOST"
+        bench --site "$SITE_NAME" set-config db_port "$DB_PORT"
+        bench --site "$SITE_NAME" set-config db_name "$DB_NAME"
     fi
 
-    echo "No existing site named ${SITE_NAME} found in this bench, continuing with init..."
-fi
+    echo "Updating site URL configuration..."
+    bench --site "$SITE_NAME" set-config host_name "$SITE_URL"
 
-echo "Creating new bench..."
-
-export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
-
-bench init --skip-redis-config-generation frappe-bench
-
-cd frappe-bench
-
-# Configure Redis (required for all deployments)
-bench set-redis-cache-host redis://redis:6379
-bench set-redis-queue-host redis://redis:6379
-bench set-redis-socketio-host redis://redis:6379
-
-# Remove redis, watch from Procfile
-sed -i '/redis/d' ./Procfile
-sed -i '/watch/d' ./Procfile
-
-bench get-app erpnext
-bench get-app hrms
-
-if site_exists; then
-    echo "Site ${SITE_NAME} already exists in freshly created bench."
-    # Ensure required directories exist (logs and file storage)
-    mkdir -p "sites/${SITE_NAME}/logs"
-    mkdir -p "sites/${SITE_NAME}/public/files"
-    mkdir -p "sites/${SITE_NAME}/private/files"
-    echo "Running migrations instead of creating a new site..."
+    echo "Running database migrations..."
     bench --site "$SITE_NAME" migrate
 else
     echo "No existing site ${SITE_NAME} found, creating site with appropriate database configuration"
