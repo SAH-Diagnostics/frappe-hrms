@@ -67,10 +67,10 @@ def main() -> None:
     if "lightsail_private_key_b64" in secret:
         secret_mapped["lightsail_private_key_b64"] = secret["lightsail_private_key_b64"]
     
-    # Build env_file_content from database credentials
-    # Note: Frappe uses MariaDB/MySQL, not PostgreSQL
-    # If using Lightsail database, ensure it's MariaDB/MySQL compatible
-    env_parts = []
+    # Build env_file_content from database + site + bucket configuration
+    # Note: Frappe uses MariaDB/MySQL, not PostgreSQL.
+    # If using Lightsail database, ensure it's MariaDB/MySQL compatible.
+    env_parts: list[str] = []
     if "DATABASE_ENDPOINT" in secret:
         env_parts.append(f"DB_HOST={secret['DATABASE_ENDPOINT']}")
     if "DATABASE_NAME" in secret:
@@ -102,6 +102,19 @@ def main() -> None:
     if "SITE_URL" in secret:
         env_parts.append(f"SITE_URL={secret['SITE_URL']}")
     
+    # Add Lightsail / S3-compatible bucket configuration if present
+    # These will later be consumed by the container / Frappe site config.
+    if "BUCKET_NAME" in secret:
+        env_parts.append(f"BUCKET_NAME={secret['BUCKET_NAME']}")
+    if "BUCKET_ENDPOINT" in secret:
+        env_parts.append(f"BUCKET_ENDPOINT={secret['BUCKET_ENDPOINT']}")
+    if "BUCKET_REGION" in secret:
+        env_parts.append(f"BUCKET_REGION={secret['BUCKET_REGION']}")
+    if "BUCKET_ACCESS_KEY_ID" in secret:
+        env_parts.append(f"BUCKET_ACCESS_KEY_ID={secret['BUCKET_ACCESS_KEY_ID']}")
+    if "BUCKET_SECRET_ACCESS_KEY" in secret:
+        env_parts.append(f"BUCKET_SECRET_ACCESS_KEY={secret['BUCKET_SECRET_ACCESS_KEY']}")
+
     # Add any existing env_file_content or use the built one
     if "env_file_content" in secret:
         secret_mapped["env_file_content"] = secret["env_file_content"]

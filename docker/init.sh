@@ -218,6 +218,25 @@ fi
 # Configure site
 bench --site "$SITE_NAME" set-config developer_mode 1
 bench --site "$SITE_NAME" set-config host_name "$SITE_URL"
+
+# Configure Lightsail / S3-compatible bucket for file storage if env vars are present
+if [ -n "${BUCKET_NAME:-}" ] && [ -n "${BUCKET_ACCESS_KEY_ID:-}" ] && [ -n "${BUCKET_SECRET_ACCESS_KEY:-}" ]; then
+    echo "Configuring S3-compatible bucket for file storage..."
+    bench --site "$SITE_NAME" set-config s3_file_system 1
+    bench --site "$SITE_NAME" set-config s3_bucket "$BUCKET_NAME"
+
+    # Region and endpoint are optional but recommended
+    if [ -n "${BUCKET_REGION:-}" ]; then
+        bench --site "$SITE_NAME" set-config s3_region "$BUCKET_REGION"
+    fi
+    if [ -n "${BUCKET_ENDPOINT:-}" ]; then
+        bench --site "$SITE_NAME" set-config s3_endpoint_url "https://${BUCKET_ENDPOINT}"
+    fi
+
+    bench --site "$SITE_NAME" set-config s3_access_key_id "$BUCKET_ACCESS_KEY_ID"
+    bench --site "$SITE_NAME" set-config s3_secret_access_key "$BUCKET_SECRET_ACCESS_KEY"
+fi
+
 bench --site "$SITE_NAME" enable-scheduler
 bench --site "$SITE_NAME" clear-cache
 bench use "$SITE_NAME"
