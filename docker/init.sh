@@ -71,6 +71,21 @@ if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
 
         if [ "$DB_HOST" != "mariadb" ]; then
             echo "Updating database configuration..."
+
+            # ALWAYS update common_site_config.json to ensure correct external DB settings
+            cat > "sites/common_site_config.json" << EOF
+{
+    "db_host": "$DB_HOST",
+    "db_port": $DB_PORT,
+    "db_type": "mariadb",
+    "root_login": "$DB_USER",
+    "root_password": "$DB_PASSWORD",
+    "redis_cache": "redis://redis:6379",
+    "redis_queue": "redis://redis:6379",
+    "redis_socketio": "redis://redis:6379"
+}
+EOF
+
             bench --site "$SITE_NAME" set-config db_host "$DB_HOST"
             bench --site "$SITE_NAME" set-config db_port "$DB_PORT"
             bench --site "$SITE_NAME" set-config db_name "$DB_NAME"
@@ -138,8 +153,9 @@ else
             # Ensure basic config files exist so Frappe can connect
             mkdir -p "sites/${SITE_NAME}"
 
-            if [ ! -f "sites/common_site_config.json" ]; then
-                cat > "sites/common_site_config.json" << EOF
+            # ALWAYS update common_site_config.json when using external database
+            # (don't just check if it exists, as it may have old localhost settings)
+            cat > "sites/common_site_config.json" << EOF
 {
     "db_host": "$DB_HOST",
     "db_port": $DB_PORT,
@@ -151,7 +167,6 @@ else
     "redis_socketio": "redis://redis:6379"
 }
 EOF
-            fi
 
             if [ ! -f "sites/${SITE_NAME}/site_config.json" ]; then
                 ENCRYPTION_KEY=$(openssl rand -base64 32)
