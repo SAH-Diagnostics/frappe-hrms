@@ -185,6 +185,32 @@ jobs:
           mkdir -p deploy/dev
           mv /tmp/frappe.env deploy/dev/.env.remote
           
+          # Trigger backup before deployment (if script exists and container is running)
+          echo "=== Running pre-deployment backup ==="
+          BACKUP_SCRIPT="${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh"
+          CONTAINER_NAME="docker-frappe-1"
+          
+          if [ -f "$BACKUP_SCRIPT" ] && [ -x "$BACKUP_SCRIPT" ]; then
+            # Check if container is running (backup needs it)
+            if sudo docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+              echo "Backup script found and container is running, triggering backup..."
+              if sudo "$BACKUP_SCRIPT" >> /var/log/frappe-files-sync.log 2>&1; then
+                echo "✓ Pre-deployment backup completed successfully"
+              else
+                BACKUP_EXIT_CODE=$?
+                echo "⚠ Pre-deployment backup failed with exit code $BACKUP_EXIT_CODE"
+                echo "Continuing with deployment anyway..."
+                echo "Check /var/log/frappe-files-sync.log for details"
+              fi
+            else
+              echo "⚠ Container '$CONTAINER_NAME' is not running, skipping pre-deployment backup"
+              echo "This is normal on first deployment or if containers were already stopped"
+            fi
+          else
+            echo "⚠ Backup script not found or not executable at $BACKUP_SCRIPT"
+            echo "Skipping pre-deployment backup (this is normal on first deployment)"
+          fi
+          
           # Stop existing containers
           echo "=== Stopping existing containers ==="
           if [ -f "${{ steps.prepare.outputs.compose_file }}" ]; then
@@ -469,10 +495,22 @@ jobs:
             CONTAINER_STATUS=$(sudo docker inspect -f '{{.State.Status}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
             if [ "$CONTAINER_STATUS" = "running" ]; then
               if ! sudo docker exec "$FRAPPE_CONTAINER" bash -lc "command -v aws >/dev/null 2>&1"; then
-                echo "Installing AWS CLI in frappe container..."
-                sudo docker exec "$FRAPPE_CONTAINER" bash -lc "sudo apt-get update && sudo apt-get install -y awscli" || echo "⚠ Failed to install AWS CLI"
+                echo "Installing AWS CLI v2 in frappe container..."
+                sudo docker exec "$FRAPPE_CONTAINER" bash -lc "
+                  cd /tmp
+                  curl -sS 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o awscliv2.zip
+                  unzip -q awscliv2.zip
+                  sudo ./aws/install
+                  rm -rf aws awscliv2.zip
+                  aws --version
+                " || echo "⚠ Failed to install AWS CLI"
               else
                 echo "✓ AWS CLI already available in frappe container"
+                # Verify it's working and fix urllib3 if needed
+                sudo docker exec "$FRAPPE_CONTAINER" bash -lc "aws --version 2>&1" | grep -q "aws-cli" || {
+                  echo "AWS CLI has issues, fixing urllib3..."
+                  sudo docker exec "$FRAPPE_CONTAINER" bash -lc "pip3 install --user 'urllib3<2.0' --force-reinstall 2>/dev/null || true"
+                }
               fi
             else
               echo "⚠ Skipping AWS CLI installation - frappe container is not running"
@@ -485,6 +523,10 @@ jobs:
           # Make backup script executable
           if [ -f "${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh" ]; then
             sudo chmod +x "${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh"
+            echo "✓ Backup script is executable"
+          else
+            echo "✗ Error: Backup script not found at ${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh"
+            exit 1
           fi
 
           # Read backup interval (in hours) from the env file created during deploy
@@ -496,6 +538,7 @@ jobs:
               BACKUP_HOURS="$VALUE"
             fi
           fi
+          echo "Backup interval: Every $BACKUP_HOURS hours"
 
           # Build cron schedule: run at minute 0 every BACKUP_HOURS
           CRON_SCHEDULE="0 */$BACKUP_HOURS * * *"
@@ -503,6 +546,30 @@ jobs:
 
           # Ensure only one cron entry for the backup script
           (sudo crontab -l 2>/dev/null | grep -v 'sync-files-to-s3.sh' ; echo "$CRON_JOB") | sudo crontab -
+          
+          # Verify cron job was created
+          if sudo crontab -l 2>/dev/null | grep -q "sync-files-to-s3.sh"; then
+            echo "✓ Cron job created successfully"
+            echo "Cron job details:"
+            sudo crontab -l | grep "sync-files-to-s3.sh" | sed 's/^/  /'
+          else
+            echo "✗ Error: Failed to create cron job"
+            exit 1
+          fi
+          
+          # Ensure log file directory exists and is writable
+          sudo touch /var/log/frappe-files-sync.log
+          sudo chmod 644 /var/log/frappe-files-sync.log
+          echo "✓ Log file configured: /var/log/frappe-files-sync.log"
+          
+          # Test script can be executed (syntax check only, don't actually run it)
+          echo "=== Testing backup script syntax ==="
+          if bash -n "${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh"; then
+            echo "✓ Backup script syntax is valid"
+          else
+            echo "✗ Error: Backup script has syntax errors"
+            exit 1
+          fi
 
           # Display SSL status
           if check_certificate_valid; then
