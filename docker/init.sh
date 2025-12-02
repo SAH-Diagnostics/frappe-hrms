@@ -37,6 +37,26 @@ db_exists() {
     return 1
 }
 
+# Configure Lightsail / S3-compatible bucket for file storage if env vars are present
+configure_bucket_storage() {
+    if [ -n "${BUCKET_NAME:-}" ] && [ -n "${BUCKET_ACCESS_KEY_ID:-}" ] && [ -n "${BUCKET_SECRET_ACCESS_KEY:-}" ]; then
+        echo "Configuring S3-compatible bucket for file storage..."
+        bench --site "$SITE_NAME" set-config s3_file_system 1
+        bench --site "$SITE_NAME" set-config s3_bucket "$BUCKET_NAME"
+
+        # Region and endpoint are optional but recommended
+        if [ -n "${BUCKET_REGION:-}" ]; then
+            bench --site "$SITE_NAME" set-config s3_region "$BUCKET_REGION"
+        fi
+        if [ -n "${BUCKET_ENDPOINT:-}" ]; then
+            bench --site "$SITE_NAME" set-config s3_endpoint_url "https://${BUCKET_ENDPOINT}"
+        fi
+
+        bench --site "$SITE_NAME" set-config s3_access_key_id "$BUCKET_ACCESS_KEY_ID"
+        bench --site "$SITE_NAME" set-config s3_secret_access_key "$BUCKET_SECRET_ACCESS_KEY"
+    fi
+}
+
 if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
     echo "Bench already exists, reusing existing setup"
     cd /home/frappe/frappe-bench
@@ -44,8 +64,10 @@ if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
     if site_exists; then
         echo "Site ${SITE_NAME} already exists, applying configuration and migrations..."
 
-        # Ensure logs directory exists (required for Frappe logging)
+        # Ensure required directories exist (logs and file storage)
         mkdir -p "sites/${SITE_NAME}/logs"
+        mkdir -p "sites/${SITE_NAME}/public/files"
+        mkdir -p "sites/${SITE_NAME}/private/files"
 
         if [ "$DB_HOST" != "mariadb" ]; then
             echo "Updating database configuration..."
@@ -59,6 +81,12 @@ if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
 
         echo "Running database migrations..."
         bench --site "$SITE_NAME" migrate
+
+        # Ensure bucket configuration is applied even when bench/site already exist
+        configure_bucket_storage
+
+        bench --site "$SITE_NAME" enable-scheduler
+        bench --site "$SITE_NAME" clear-cache
 
         bench use "$SITE_NAME"
         exec bench start
@@ -89,8 +117,10 @@ bench get-app hrms
 
 if site_exists; then
     echo "Site ${SITE_NAME} already exists in freshly created bench."
-    # Ensure logs directory exists (required for Frappe logging)
+    # Ensure required directories exist (logs and file storage)
     mkdir -p "sites/${SITE_NAME}/logs"
+    mkdir -p "sites/${SITE_NAME}/public/files"
+    mkdir -p "sites/${SITE_NAME}/private/files"
     echo "Running migrations instead of creating a new site..."
     bench --site "$SITE_NAME" migrate
 else
@@ -135,8 +165,10 @@ EOF
 EOF
             fi
 
-            # Ensure logs directory exists (required for Frappe logging)
+            # Ensure required directories exist (logs and file storage)
             mkdir -p "sites/${SITE_NAME}/logs"
+            mkdir -p "sites/${SITE_NAME}/public/files"
+            mkdir -p "sites/${SITE_NAME}/private/files"
 
             echo "Running migrations against existing external database..."
             bench --site "$SITE_NAME" migrate
@@ -219,23 +251,7 @@ fi
 bench --site "$SITE_NAME" set-config developer_mode 1
 bench --site "$SITE_NAME" set-config host_name "$SITE_URL"
 
-# Configure Lightsail / S3-compatible bucket for file storage if env vars are present
-if [ -n "${BUCKET_NAME:-}" ] && [ -n "${BUCKET_ACCESS_KEY_ID:-}" ] && [ -n "${BUCKET_SECRET_ACCESS_KEY:-}" ]; then
-    echo "Configuring S3-compatible bucket for file storage..."
-    bench --site "$SITE_NAME" set-config s3_file_system 1
-    bench --site "$SITE_NAME" set-config s3_bucket "$BUCKET_NAME"
-
-    # Region and endpoint are optional but recommended
-    if [ -n "${BUCKET_REGION:-}" ]; then
-        bench --site "$SITE_NAME" set-config s3_region "$BUCKET_REGION"
-    fi
-    if [ -n "${BUCKET_ENDPOINT:-}" ]; then
-        bench --site "$SITE_NAME" set-config s3_endpoint_url "https://${BUCKET_ENDPOINT}"
-    fi
-
-    bench --site "$SITE_NAME" set-config s3_access_key_id "$BUCKET_ACCESS_KEY_ID"
-    bench --site "$SITE_NAME" set-config s3_secret_access_key "$BUCKET_SECRET_ACCESS_KEY"
-fi
+configure_bucket_storage
 
 bench --site "$SITE_NAME" enable-scheduler
 bench --site "$SITE_NAME" clear-cache

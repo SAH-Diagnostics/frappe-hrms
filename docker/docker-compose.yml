@@ -22,6 +22,9 @@ services:
   frappe:
     image: frappe/bench:latest
     command: bash /workspace/init.sh
+    env_file:
+      # Populated during deployment (deploy/dev/.env.remote)
+      - deploy/dev/.env.remote
     environment:
       - SHELL=/bin/bash
       # Database connection from environment file (for production)
