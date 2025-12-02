@@ -72,6 +72,9 @@ if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
         if [ "$DB_HOST" != "mariadb" ]; then
             echo "Updating database configuration..."
 
+            # Ensure sites directory exists
+            mkdir -p sites
+
             # ALWAYS update common_site_config.json to ensure correct external DB settings
             cat > "sites/common_site_config.json" << EOF
 {

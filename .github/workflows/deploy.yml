@@ -394,7 +394,26 @@ jobs:
           else
             echo "⚠ Warning: Frappe container may not be responding on port 8000"
             echo "Checking docker container status:"
-            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps
+            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -a
+            
+            # Check if frappe container exists and get its status
+            FRAPPE_CONTAINER=$(sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -q frappe 2>/dev/null || echo "")
+            if [ -n "$FRAPPE_CONTAINER" ]; then
+              echo ""
+              echo "=== Frappe container logs (last 50 lines) ==="
+              sudo docker logs --tail 50 "$FRAPPE_CONTAINER" 2>&1 || true
+              
+              CONTAINER_STATUS=$(sudo docker inspect -f '{{.State.Status}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
+              echo ""
+              echo "Container status: $CONTAINER_STATUS"
+              
+              if [ "$CONTAINER_STATUS" != "running" ]; then
+                echo "⚠ Frappe container is not running. Exit code:"
+                sudo docker inspect -f '{{.State.ExitCode}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown"
+              fi
+            else
+              echo "⚠ Frappe container not found"
+            fi
           fi
           
           # Check firewall status (if ufw is installed)
@@ -404,9 +423,23 @@ jobs:
             sudo ufw status | head -10
           fi
           
+          echo ""
           echo "=== Ensuring AWS CLI is available inside frappe container for backups ==="
-          if ! sudo docker exec docker-frappe-1 bash -lc "command -v aws >/dev/null 2>&1"; then
-            sudo docker exec docker-frappe-1 bash -lc "sudo apt-get update && sudo apt-get install -y awscli"
+          FRAPPE_CONTAINER=$(sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -q frappe 2>/dev/null || echo "")
+          if [ -n "$FRAPPE_CONTAINER" ]; then
+            CONTAINER_STATUS=$(sudo docker inspect -f '{{.State.Status}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
+            if [ "$CONTAINER_STATUS" = "running" ]; then
+              if ! sudo docker exec "$FRAPPE_CONTAINER" bash -lc "command -v aws >/dev/null 2>&1"; then
+                echo "Installing AWS CLI in frappe container..."
+                sudo docker exec "$FRAPPE_CONTAINER" bash -lc "sudo apt-get update && sudo apt-get install -y awscli" || echo "⚠ Failed to install AWS CLI"
+              else
+                echo "✓ AWS CLI already available in frappe container"
+              fi
+            else
+              echo "⚠ Skipping AWS CLI installation - frappe container is not running"
+            fi
+          else
+            echo "⚠ Skipping AWS CLI installation - frappe container not found"
           fi
 
           echo "=== Ensuring file backup cron job is configured ==="
