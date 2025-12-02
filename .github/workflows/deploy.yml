@@ -404,6 +404,34 @@ jobs:
             sudo ufw status | head -10
           fi
           
+          echo "=== Ensuring AWS CLI is available inside frappe container for backups ==="
+          if ! sudo docker exec docker-frappe-1 bash -lc "command -v aws >/dev/null 2>&1"; then
+            sudo docker exec docker-frappe-1 bash -lc "sudo apt-get update && sudo apt-get install -y awscli"
+          fi
+
+          echo "=== Ensuring file backup cron job is configured ==="
+          # Make backup script executable
+          if [ -f "${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh" ]; then
+            sudo chmod +x "${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh"
+          fi
+
+          # Read backup interval (in hours) from the env file created during deploy
+          BACKUP_ENV_FILE="${{ steps.prepare.outputs.remote_path }}/deploy/dev/.env.remote"
+          BACKUP_HOURS="24"
+          if [ -f "$BACKUP_ENV_FILE" ]; then
+            VALUE=$(grep -E '^FILES_BACK_UP_HOURS=' "$BACKUP_ENV_FILE" | cut -d= -f2 | tr -d '\r')
+            if [ -n "$VALUE" ]; then
+              BACKUP_HOURS="$VALUE"
+            fi
+          fi
+
+          # Build cron schedule: run at minute 0 every BACKUP_HOURS
+          CRON_SCHEDULE="0 */$BACKUP_HOURS * * *"
+          CRON_JOB="$CRON_SCHEDULE ${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh >> /var/log/frappe-files-sync.log 2>&1"
+
+          # Ensure only one cron entry for the backup script
+          (sudo crontab -l 2>/dev/null | grep -v 'sync-files-to-s3.sh' ; echo "$CRON_JOB") | sudo crontab -
+
           # Display SSL status
           if check_certificate_valid; then
             CERT_EXPIRY=$(sudo openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)

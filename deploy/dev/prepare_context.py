@@ -103,7 +103,8 @@ def main() -> None:
         env_parts.append(f"SITE_URL={secret['SITE_URL']}")
     
     # Add Lightsail / S3-compatible bucket configuration if present
-    # These will later be consumed by the container / Frappe site config.
+    # These will later be consumed by the container / Frappe site config
+    # and backup/cron configuration.
     if "BUCKET_NAME" in secret:
         env_parts.append(f"BUCKET_NAME={secret['BUCKET_NAME']}")
     if "BUCKET_ENDPOINT" in secret:
@@ -114,6 +115,10 @@ def main() -> None:
         env_parts.append(f"BUCKET_ACCESS_KEY_ID={secret['BUCKET_ACCESS_KEY_ID']}")
     if "BUCKET_SECRET_ACCESS_KEY" in secret:
         env_parts.append(f"BUCKET_SECRET_ACCESS_KEY={secret['BUCKET_SECRET_ACCESS_KEY']}")
+
+    # Optional: backup interval in hours for file sync cron job
+    if "FILES_BACK_UP_HOURS" in secret:
+        env_parts.append(f"FILES_BACK_UP_HOURS={secret['FILES_BACK_UP_HOURS']}")
 
     # Add any existing env_file_content or use the built one
     if "env_file_content" in secret:
