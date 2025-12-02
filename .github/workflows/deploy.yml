@@ -246,11 +246,22 @@ jobs:
           sudo mkdir -p /var/www/certbot
           sudo chown www-data:www-data /var/www/certbot
           
-          # Domain configuration
-          DOMAIN="dev-hrms.sahdiagnostics.com"
-          WWW_DOMAIN="www.dev-hrms.sahdiagnostics.com"
+          # Domain configuration - read from env file
+          SITE_NAME=$(grep -E '^SITE_NAME=' deploy/dev/.env.remote | cut -d= -f2 | tr -d '\r' || echo "dev-hrms.sahdiagnostics.com")
+          DOMAIN="$SITE_NAME"
+          # Extract base domain and create www variant
+          if [[ "$DOMAIN" == www.* ]]; then
+            WWW_DOMAIN="$DOMAIN"
+            BASE_DOMAIN="${DOMAIN#www.}"
+          else
+            BASE_DOMAIN="$DOMAIN"
+            WWW_DOMAIN="www.$DOMAIN"
+          fi
           CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
           KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+          
+          echo "Using domain: $DOMAIN"
+          echo "Using www domain: $WWW_DOMAIN"
           
           # Function to check if certificate is valid and not expired
           check_certificate_valid() {
@@ -289,8 +300,14 @@ jobs:
             exit 1
           fi
           
+          # Create a temporary nginx config with the correct domain
+          TEMP_NGINX="/tmp/nginx-frappe-hrms.conf"
+          # Replace hardcoded domain with actual domain from env file
+          sed "s/dev-hrms\.sahdiagnostics\.com/$DOMAIN/g; s/www\.dev-hrms\.sahdiagnostics\.com/$WWW_DOMAIN/g" deploy/dev/nginx.conf > "$TEMP_NGINX"
+          
           # Copy nginx config to system location
-          sudo cp deploy/dev/nginx.conf /etc/nginx/sites-available/frappe-hrms
+          sudo cp "$TEMP_NGINX" /etc/nginx/sites-available/frappe-hrms
+          rm -f "$TEMP_NGINX"
           
           # Enable the site
           sudo ln -sf /etc/nginx/sites-available/frappe-hrms /etc/nginx/sites-enabled/frappe-hrms
@@ -492,13 +509,13 @@ jobs:
             CERT_EXPIRY=$(sudo openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)
             echo ""
             echo "✅ HTTPS is ENABLED"
-            echo "Site is accessible at: https://dev-hrms.sahdiagnostics.com"
+            echo "Site is accessible at: https://$DOMAIN"
             echo "Certificate expires: $CERT_EXPIRY"
             echo "HTTP traffic will be automatically redirected to HTTPS"
           else
             echo ""
             echo "⚠️  HTTPS certificate is missing or invalid"
-            echo "Site may be accessible at: http://dev-hrms.sahdiagnostics.com"
+            echo "Site may be accessible at: http://$DOMAIN"
             echo "Certificate setup may have failed - check logs above"
           fi
           
