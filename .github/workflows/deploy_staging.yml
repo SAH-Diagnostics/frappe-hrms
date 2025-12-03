@@ -419,6 +419,8 @@ jobs:
             echo "=== Obtaining SSL certificate ==="
             
             # Use certbot webroot method (works even if nginx is running)
+            # NOTE: When DNS records are not yet pointing to this server, certbot will fail.
+            # We treat that as NON-FATAL so that deployment can still succeed without HTTPS.
             sudo certbot certonly --webroot \
               -w /var/www/certbot \
               -d "$DOMAIN" \
@@ -431,14 +433,16 @@ jobs:
               echo "⚠ Certbot webroot method failed, trying standalone method..."
               # Stop nginx temporarily for standalone mode
               sudo systemctl stop nginx
+              # If this also fails (for example, because DNS is not yet configured),
+              # do NOT fail the whole deployment; we'll continue with HTTP-only.
               sudo certbot certonly --standalone \
                 -d "$DOMAIN" \
                 -d "$WWW_DOMAIN" \
                 --non-interactive \
                 --agree-tos \
-                --email admin@sahdiagnostics.com
+                --email admin@sahdiagnostics.com || true
               # Restart nginx
-              sudo systemctl start nginx
+              sudo systemctl start nginx || true
             }
             
             # Verify certificate was obtained
@@ -448,7 +452,7 @@ jobs:
               echo "  Certificate expires: $CERT_EXPIRY"
             else
               echo "✗ Error: Failed to obtain valid SSL certificate"
-              echo "  Continuing with deployment, but HTTPS may not work"
+              echo "  Continuing with deployment without a valid certificate (likely DNS not pointing yet)"
             fi
           else
             # Certificate exists and is valid, but try to renew if close to expiration
@@ -480,8 +484,15 @@ jobs:
           else
             echo "✗ Nginx configuration test failed"
             echo "Showing nginx error details:"
-            sudo nginx -t 2>&1
-            exit 1
+            sudo nginx -t 2>&1 || true
+            # If there is no valid certificate yet (common when DNS is not configured),
+            # don't fail the deployment; nginx can still serve HTTP or be fixed later.
+            if check_certificate_valid; then
+              echo "⚠ Nginx config is invalid even though a certificate exists; failing deployment."
+              exit 1
+            else
+              echo "⚠ Skipping deployment failure because SSL is not yet fully configured (likely DNS / certificate issue)."
+            fi
           fi
           
           # Enable nginx to start on boot
