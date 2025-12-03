@@ -28,11 +28,17 @@ site_exists() {
     # new-site flow and initialise the schema instead of trying to run
     # migrations against an empty database (which causes errors like
     # "Table '...tabDefaultValue' doesn't exist").
-    if [ "$DB_HOST" != "mariadb" ] && command -v mysql >/dev/null 2>&1; then
-        if ! mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" \
-            -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='tabDefaultValue' LIMIT 1;" \
-            >/dev/null 2>&1; then
-            echo "Site config exists for ${SITE_NAME} but database ${DB_NAME} appears uninitialised."
+    if [ "$DB_HOST" != "mariadb" ]; then
+        if command -v mysql >/dev/null 2>&1; then
+            if ! mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" \
+                -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='tabDefaultValue' LIMIT 1;" \
+                >/dev/null 2>&1; then
+                echo "Site config exists for ${SITE_NAME} but database ${DB_NAME} appears uninitialised."
+                echo "Treating as a new site so the schema can be created on the external RDS instance."
+                return 1
+            fi
+        else
+            echo "MySQL client is not available inside the container; external DB ${DB_NAME} on ${DB_HOST} will be treated as uninitialised."
             echo "Treating as a new site so the schema can be created on the external RDS instance."
             return 1
         fi
