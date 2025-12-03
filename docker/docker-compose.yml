@@ -26,16 +26,6 @@ services:
       - ../deploy/dev/.env.remote
     environment:
       - SHELL=/bin/bash
-      # Database connection from environment file (for production)
-      # Note: Frappe uses MariaDB/MySQL, not PostgreSQL
-      # For external database, set DB_HOST to the database endpoint
-      - DB_HOST=${DB_HOST:-mariadb}
-      - DB_NAME=${DB_NAME:-frappe_db}
-      - DB_USER=${DB_USER:-root}
-      - DB_PASSWORD=${DB_PASSWORD:-123}
-      - DB_PORT=${DB_PORT:-3306}
-      - SITE_NAME=${SITE_NAME:-hrms.localhost}
-      - SITE_URL=${SITE_URL:-http://localhost:8000}
     working_dir: /home/frappe
     volumes:
       - .:/workspace
