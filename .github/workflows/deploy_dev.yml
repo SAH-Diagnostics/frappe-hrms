@@ -1,0 +1,659 @@
+name: Deploy to AWS Lightsail
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+env:
+  DOCKER_COMPOSE_FILE: docker/docker-compose.yml
+  REMOTE_PROJECT_PATH: /opt/frappe-hrms
+
+jobs:
+  deploy:
+    name: Deploy to Lightsail
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'eu-west-2' }}
+
+      - name: Verify AWS CLI
+        run: |
+          # AWS CLI is pre-installed on GitHub Actions runners
+          # For act-cli, install if needed (cached after first run)
+          if ! command -v aws &> /dev/null; then
+            echo "AWS CLI not found, installing..."
+            curl -sS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip -q awscliv2.zip
+            sudo ./aws/install
+            rm -rf aws awscliv2.zip
+            echo "✓ AWS CLI installed"
+          else
+            echo "✓ AWS CLI already available"
+          fi
+          aws --version
+
+      - name: Retrieve deployment secrets from AWS Secrets Manager
+        id: secrets
+        run: |
+          # Determine the region for the secret (can be different from default region)
+          SECRET_REGION="${{ secrets.AWS_SECRETS_REGION || secrets.AWS_REGION || 'eu-west-2' }}"
+          
+          echo "Fetching secret from region: $SECRET_REGION"
+          
+          # Retrieve the secret value
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "${{ secrets.AWS_DEPLOY_SECRET_ID }}" \
+            --region "$SECRET_REGION" \
+            --query SecretString \
+            --output text)
+          
+          # Export for prepare_context.py
+          echo "SECRET_JSON<<EOF" >> $GITHUB_ENV
+          echo "$SECRET_JSON" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prepare deployment context
+        id: prepare
+        run: |
+          python deploy/dev/prepare_context.py
+
+      - name: Setup SSH key and test connection
+        run: |
+          echo "=== SSH Key Setup and Verification ==="
+          
+          # Ensure SSH key has correct permissions
+          chmod 600 ${{ steps.prepare.outputs.ssh_key_path }}
+          echo "✓ SSH key permissions:"
+          ls -la ${{ steps.prepare.outputs.ssh_key_path }}
+          
+          # Verify key format
+          echo ""
+          echo "✓ Verifying SSH key format..."
+          head -1 ${{ steps.prepare.outputs.ssh_key_path }}
+          tail -1 ${{ steps.prepare.outputs.ssh_key_path }}
+          
+          # Check key type
+          echo ""
+          echo "✓ Checking key type..."
+          ssh-keygen -l -f ${{ steps.prepare.outputs.ssh_key_path }} || echo "Warning: Could not determine key type"
+          
+          # Add host to known_hosts
+          echo ""
+          echo "✓ Adding host to known_hosts..."
+          mkdir -p ~/.ssh
+          ssh-keyscan -p ${{ steps.prepare.outputs.port }} -H ${{ steps.prepare.outputs.host }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          
+          # Test SSH connection
+          echo ""
+          echo "✓ Testing SSH connection to ${{ steps.prepare.outputs.host }}..."
+          echo "  User: ${{ steps.prepare.outputs.user }}"
+          echo "  Port: ${{ steps.prepare.outputs.port }}"
+          echo ""
+          
+          if ssh -p ${{ steps.prepare.outputs.port }} \
+            -i ${{ steps.prepare.outputs.ssh_key_path }} \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=30 \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }} "echo 'SSH connection successful!'" 2>&1; then
+            echo ""
+            echo "✅ SSH connection successful!"
+          else
+            echo ""
+            echo "❌ SSH connection failed!"
+            echo ""
+            echo "Troubleshooting steps:"
+            echo "1. Verify the SSH key in AWS Secrets Manager matches your Lightsail key"
+            echo "2. Download your Lightsail key and encode it: cat key.pem | base64 -w 0"
+            echo "3. Update AWS Secrets Manager with the correct base64-encoded key"
+            echo "4. Ensure the public key is in /home/ubuntu/.ssh/authorized_keys on the server"
+            echo ""
+            echo "Run this locally to test your key:"
+            echo "  ssh -i your-key.pem ubuntu@${{ steps.prepare.outputs.host }}"
+            exit 1
+          fi
+      
+      - name: Create .env file for deployment
+        run: |
+          cat > deploy.env << 'EOF'
+          ${{ steps.prepare.outputs.env_content }}
+          EOF
+          echo "Environment file created:"
+          cat deploy.env
+      
+      - name: Copy .env file to server
+        run: |
+          scp -P ${{ steps.prepare.outputs.port }} \
+            -i ${{ steps.prepare.outputs.ssh_key_path }} \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            deploy.env \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }}:/tmp/frappe.env
+
+      - name: Deploy on Lightsail instance
+        run: |
+          ssh -p ${{ steps.prepare.outputs.port }} \
+            -i ${{ steps.prepare.outputs.ssh_key_path }} \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }} << 'ENDSSH'
+          
+          set -e
+          
+          echo "=== Starting deployment ==="
+          
+          # Install git if not present
+          if ! command -v git &> /dev/null; then
+            echo "Installing git..."
+            sudo apt-get update && sudo apt-get install -y git
+          fi
+          
+          # Clone or pull the repository
+          if [ -d "${{ steps.prepare.outputs.remote_path }}/.git" ]; then
+            echo "=== Repository exists, pulling latest changes ==="
+            cd ${{ steps.prepare.outputs.remote_path }}
+            sudo chown -R ${{ steps.prepare.outputs.user }}:${{ steps.prepare.outputs.user }} .
+            git fetch origin
+            git reset --hard origin/main
+            git pull origin main
+          else
+            echo "=== Cloning repository ==="
+            sudo rm -rf ${{ steps.prepare.outputs.remote_path }}
+            sudo mkdir -p ${{ steps.prepare.outputs.remote_path }}
+            sudo chown -R ${{ steps.prepare.outputs.user }}:${{ steps.prepare.outputs.user }} ${{ steps.prepare.outputs.remote_path }}
+            git clone https://github.com/SAH-Diagnostics/frappe-hrms.git ${{ steps.prepare.outputs.remote_path }}
+            cd ${{ steps.prepare.outputs.remote_path }}
+          fi
+          
+          echo "=== Setting up environment file ==="
+          mkdir -p deploy/dev
+          mv /tmp/frappe.env deploy/dev/.env.remote
+          
+          # Trigger backup before deployment (if script exists and container is running)
+          echo "=== Running pre-deployment backup ==="
+          BACKUP_SCRIPT="${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh"
+          CONTAINER_NAME="docker-frappe-1"
+          
+          if [ -f "$BACKUP_SCRIPT" ] && [ -x "$BACKUP_SCRIPT" ]; then
+            # Check if container is running (backup needs it)
+            if sudo docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+              echo "Backup script found and container is running, triggering backup..."
+              if sudo "$BACKUP_SCRIPT" >> /var/log/frappe-files-sync.log 2>&1; then
+                echo "✓ Pre-deployment backup completed successfully"
+              else
+                BACKUP_EXIT_CODE=$?
+                echo "⚠ Pre-deployment backup failed with exit code $BACKUP_EXIT_CODE"
+                echo "Continuing with deployment anyway..."
+                echo "Check /var/log/frappe-files-sync.log for details"
+              fi
+            else
+              echo "⚠ Container '$CONTAINER_NAME' is not running, skipping pre-deployment backup"
+              echo "This is normal on first deployment or if containers were already stopped"
+            fi
+          else
+            echo "⚠ Backup script not found or not executable at $BACKUP_SCRIPT"
+            echo "Skipping pre-deployment backup (this is normal on first deployment)"
+          fi
+          
+          # Stop existing containers
+          echo "=== Stopping existing containers ==="
+          if [ -f "${{ steps.prepare.outputs.compose_file }}" ]; then
+            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote down || true
+          fi
+          
+          # Pull latest images and rebuild
+          echo "=== Building and starting containers ==="
+          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote pull || true
+          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote up -d --build
+          
+          echo "=== Waiting for services to be ready ==="
+          sleep 15
+          
+          # Check container status
+          echo "=== Container status ==="
+          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -a
+          
+          # Check frappe container logs immediately after startup
+          echo ""
+          echo "=== Checking frappe container startup logs ==="
+          FRAPPE_CONTAINER=$(sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -q frappe 2>/dev/null || echo "")
+          if [ -n "$FRAPPE_CONTAINER" ]; then
+            echo "Frappe container ID: $FRAPPE_CONTAINER"
+            CONTAINER_STATUS=$(sudo docker inspect -f '{{.State.Status}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
+            echo "Container status: $CONTAINER_STATUS"
+            if [ "$CONTAINER_STATUS" = "exited" ] || [ "$CONTAINER_STATUS" = "dead" ]; then
+              EXIT_CODE=$(sudo docker inspect -f '{{.State.ExitCode}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
+              echo "⚠ Container exited with code: $EXIT_CODE"
+              echo "Last 100 lines of logs:"
+              sudo docker logs "$FRAPPE_CONTAINER" --tail 100 2>&1 || true
+            elif [ "$CONTAINER_STATUS" = "running" ]; then
+              echo "✓ Container is running"
+              echo "Last 50 lines of logs:"
+              sudo docker logs "$FRAPPE_CONTAINER" --tail 50 2>&1 || true
+            fi
+          else
+            echo "⚠ Frappe container not found"
+          fi
+          
+          # Setup nginx reverse proxy and SSL certificates
+          echo "=== Configuring nginx and SSL certificates ==="
+          
+          # Install nginx if not present
+          if ! command -v nginx &> /dev/null; then
+            echo "Installing nginx..."
+            sudo apt-get update
+            sudo apt-get install -y nginx
+          fi
+          
+          # Install certbot if not present
+          if ! command -v certbot &> /dev/null; then
+            echo "Installing certbot..."
+            sudo apt-get update
+            sudo apt-get install -y certbot python3-certbot-nginx
+          fi
+          
+          # Ensure certbot webroot directory exists
+          sudo mkdir -p /var/www/certbot
+          sudo chown www-data:www-data /var/www/certbot
+          
+          # Domain configuration - read from env file
+          SITE_NAME=$(grep -E '^SITE_NAME=' deploy/dev/.env.remote | cut -d= -f2 | tr -d '\r' || echo "dev-hrms.sahdiagnostics.com")
+          DOMAIN="$SITE_NAME"
+          # Extract base domain and create www variant
+          if [[ "$DOMAIN" == www.* ]]; then
+            WWW_DOMAIN="$DOMAIN"
+            BASE_DOMAIN="${DOMAIN#www.}"
+          else
+            BASE_DOMAIN="$DOMAIN"
+            WWW_DOMAIN="www.$DOMAIN"
+          fi
+          CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+          KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+          
+          echo "Using domain: $DOMAIN"
+          echo "Using www domain: $WWW_DOMAIN"
+          
+          # Function to check if certificate is valid and not expired
+          check_certificate_valid() {
+            if [ ! -f "$CERT_PATH" ] && [ ! -L "$CERT_PATH" ]; then
+              return 1
+            fi
+            
+            if ! sudo test -r "$CERT_PATH" || ! sudo test -r "$KEY_PATH"; then
+              return 1
+            fi
+            
+            # Check if certificate is expired or expires within 30 days
+            # Using openssl to check expiration (returns 0 if valid, 1 if expired/expiring soon)
+            if sudo openssl x509 -checkend 2592000 -noout -in "$CERT_PATH" 2>/dev/null; then
+              return 0
+            else
+              return 1
+            fi
+          }
+          
+          # Check certificate status and obtain/renew if needed
+          CERT_NEEDED=false
+          if check_certificate_valid; then
+            echo "✓ SSL certificate exists and is valid"
+            CERT_EXPIRY=$(sudo openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)
+            echo "  Certificate expires: $CERT_EXPIRY"
+          else
+            echo "⚠ SSL certificate is missing, expired, or expiring soon"
+            CERT_NEEDED=true
+          fi
+          
+          # Deploy nginx config first (needed for certbot webroot validation)
+          echo "=== Deploying nginx configuration ==="
+          if [ ! -f "deploy/dev/nginx.conf" ]; then
+            echo "✗ Error: deploy/dev/nginx.conf not found!"
+            exit 1
+          fi
+          
+          # Create a temporary nginx config with the correct domain
+          TEMP_NGINX="/tmp/nginx-frappe-hrms.conf"
+          # Replace hardcoded domain with actual domain from env file
+          sed "s/dev-hrms\.sahdiagnostics\.com/$DOMAIN/g; s/www\.dev-hrms\.sahdiagnostics\.com/$WWW_DOMAIN/g" deploy/dev/nginx.conf > "$TEMP_NGINX"
+          
+          # Copy nginx config to system location
+          sudo cp "$TEMP_NGINX" /etc/nginx/sites-available/frappe-hrms
+          rm -f "$TEMP_NGINX"
+          
+          # Enable the site
+          sudo ln -sf /etc/nginx/sites-available/frappe-hrms /etc/nginx/sites-enabled/frappe-hrms
+          sudo rm -f /etc/nginx/sites-enabled/default
+          
+          # Start nginx if not running (needed for certbot webroot validation)
+          if ! sudo systemctl is-active --quiet nginx; then
+            echo "Starting nginx for certificate validation..."
+            sudo systemctl start nginx
+          else
+            # Test nginx config before reloading
+            if sudo nginx -t; then
+              sudo systemctl reload nginx
+            else
+              echo "⚠ Nginx config test failed, but continuing for certificate setup"
+            fi
+          fi
+          
+          # Obtain or renew SSL certificate
+          if [ "$CERT_NEEDED" = true ]; then
+            echo "=== Obtaining SSL certificate ==="
+            
+            # Use certbot webroot method (works even if nginx is running)
+            sudo certbot certonly --webroot \
+              -w /var/www/certbot \
+              -d "$DOMAIN" \
+              -d "$WWW_DOMAIN" \
+              --non-interactive \
+              --agree-tos \
+              --email admin@sahdiagnostics.com \
+              --keep-until-expiring || {
+              
+              echo "⚠ Certbot webroot method failed, trying standalone method..."
+              # Stop nginx temporarily for standalone mode
+              sudo systemctl stop nginx
+              sudo certbot certonly --standalone \
+                -d "$DOMAIN" \
+                -d "$WWW_DOMAIN" \
+                --non-interactive \
+                --agree-tos \
+                --email admin@sahdiagnostics.com
+              # Restart nginx
+              sudo systemctl start nginx
+            }
+            
+            # Verify certificate was obtained
+            if check_certificate_valid; then
+              echo "✓ SSL certificate obtained successfully"
+              CERT_EXPIRY=$(sudo openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)
+              echo "  Certificate expires: $CERT_EXPIRY"
+            else
+              echo "✗ Error: Failed to obtain valid SSL certificate"
+              echo "  Continuing with deployment, but HTTPS may not work"
+            fi
+          else
+            # Certificate exists and is valid, but try to renew if close to expiration
+            echo "=== Checking if certificate renewal is needed ==="
+            # Renew if certificate expires within 30 days
+            if ! sudo openssl x509 -checkend 2592000 -noout -in "$CERT_PATH" 2>/dev/null; then
+              echo "Certificate expires soon, attempting renewal..."
+              sudo certbot renew --quiet --nginx || {
+                echo "⚠ Certificate renewal failed, but existing certificate is still valid"
+              }
+            fi
+          fi
+          
+          # Set up automatic certificate renewal cron job
+          echo "=== Setting up automatic certificate renewal ==="
+          CRON_JOB="0 0,12 * * * /usr/bin/certbot renew --quiet --nginx && /usr/bin/systemctl reload nginx"
+          if ! sudo crontab -l 2>/dev/null | grep -q "certbot renew"; then
+            (sudo crontab -l 2>/dev/null; echo "$CRON_JOB") | sudo crontab -
+            echo "✓ Certbot renewal cron job added"
+          else
+            echo "✓ Certbot renewal cron job already exists"
+          fi
+          
+          # Final nginx configuration test and reload
+          echo "=== Final nginx configuration ==="
+          if sudo nginx -t; then
+            echo "✓ Nginx configuration is valid"
+            sudo systemctl reload nginx
+          else
+            echo "✗ Nginx configuration test failed"
+            echo "Showing nginx error details:"
+            sudo nginx -t 2>&1
+            exit 1
+          fi
+          
+          # Enable nginx to start on boot
+          sudo systemctl enable nginx
+          
+          # Verify nginx config file was created
+          if [ ! -f /etc/nginx/sites-available/frappe-hrms ]; then
+            echo "✗ Error: nginx config file was not created!"
+            exit 1
+          fi
+          echo "✓ Nginx config file deployed from deploy/dev/nginx.conf"
+          
+          # Verify symlink was created
+          if [ -L /etc/nginx/sites-enabled/frappe-hrms ]; then
+            echo "✓ Nginx site enabled"
+          else
+            echo "✗ Error: Failed to enable nginx site"
+            exit 1
+          fi
+          
+          echo "=== Nginx configured and reloaded ==="
+          
+          # Verify nginx is running
+          echo "=== Verifying nginx status ==="
+          sudo systemctl status nginx --no-pager -l || true
+          
+          # Check if nginx is listening on ports 80 and 443
+          echo ""
+          echo "=== Checking listening ports ==="
+          sudo ss -tlnp | grep -E ':80|:443' || echo "⚠ Warning: nginx may not be listening on ports 80/443"
+          
+          # Verify frappe container port is accessible
+          echo ""
+          echo "=== Verifying frappe container connectivity ==="
+          if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000 | grep -q "200\|302\|301"; then
+            echo "✓ Frappe container is responding on port 8000"
+          else
+            echo "⚠ Warning: Frappe container may not be responding on port 8000"
+            echo "Checking docker container status:"
+            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -a
+            
+            # Check if frappe container exists and get its status
+            FRAPPE_CONTAINER=$(sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -q frappe 2>/dev/null || echo "")
+            if [ -n "$FRAPPE_CONTAINER" ]; then
+              echo ""
+              echo "=== Frappe container logs (last 50 lines) ==="
+              sudo docker logs --tail 50 "$FRAPPE_CONTAINER" 2>&1 || true
+              
+              CONTAINER_STATUS=$(sudo docker inspect -f '{{.State.Status}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
+              echo ""
+              echo "Container status: $CONTAINER_STATUS"
+              
+              if [ "$CONTAINER_STATUS" != "running" ]; then
+                echo "⚠ Frappe container is not running. Exit code:"
+                sudo docker inspect -f '{{.State.ExitCode}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown"
+              fi
+            else
+              echo "⚠ Frappe container not found"
+            fi
+          fi
+          
+          # Check firewall status (if ufw is installed)
+          if command -v ufw &> /dev/null; then
+            echo ""
+            echo "=== Checking firewall status ==="
+            sudo ufw status | head -10
+          fi
+          
+          echo ""
+          echo "=== Ensuring AWS CLI is available inside frappe container for backups ==="
+          FRAPPE_CONTAINER=$(sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -q frappe 2>/dev/null || echo "")
+          if [ -n "$FRAPPE_CONTAINER" ]; then
+            CONTAINER_STATUS=$(sudo docker inspect -f '{{.State.Status}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
+            if [ "$CONTAINER_STATUS" = "running" ]; then
+              if ! sudo docker exec "$FRAPPE_CONTAINER" bash -lc "command -v aws >/dev/null 2>&1"; then
+                echo "Installing AWS CLI v2 in frappe container..."
+                sudo docker exec "$FRAPPE_CONTAINER" bash -lc "
+                  set -e
+                  # Install required dependencies
+                  sudo apt-get update -qq
+                  sudo apt-get install -y -qq unzip curl
+                  
+                  # Download and install AWS CLI v2
+                  cd /tmp
+                  curl -sS 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o awscliv2.zip
+                  unzip -q awscliv2.zip
+                  sudo ./aws/install
+                  rm -rf aws awscliv2.zip
+                  
+                  # Verify installation
+                  aws --version
+                  echo '✓ AWS CLI v2 installed successfully'
+                " || {
+                  echo "⚠ Failed to install AWS CLI v2, trying pip installation as fallback..."
+                  sudo docker exec "$FRAPPE_CONTAINER" bash -lc "
+                    pip3 install --user awscli --quiet || sudo pip3 install awscli --quiet
+                    aws --version
+                    echo '✓ AWS CLI installed via pip'
+                  " || echo "⚠ Failed to install AWS CLI via pip as well"
+                }
+              else
+                echo "✓ AWS CLI already available in frappe container"
+                # Verify it's working and fix urllib3 if needed
+                if sudo docker exec "$FRAPPE_CONTAINER" bash -lc "aws --version 2>&1" | grep -q "aws-cli"; then
+                  echo "✓ AWS CLI is working correctly"
+                else
+                  echo "AWS CLI has issues, attempting to fix..."
+                  # Try fixing urllib3 first
+                  sudo docker exec "$FRAPPE_CONTAINER" bash -lc "pip3 install --user 'urllib3<2.0' --force-reinstall 2>/dev/null || true" || true
+                  # If still not working, reinstall AWS CLI with proper dependencies
+                  if ! sudo docker exec "$FRAPPE_CONTAINER" bash -lc "aws --version 2>&1" | grep -q "aws-cli"; then
+                    echo "Reinstalling AWS CLI v2..."
+                    sudo docker exec "$FRAPPE_CONTAINER" bash -lc "
+                      sudo apt-get update -qq && sudo apt-get install -y -qq unzip curl
+                      cd /tmp
+                      curl -sS 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o awscliv2.zip
+                      unzip -q awscliv2.zip
+                      sudo ./aws/install
+                      rm -rf aws awscliv2.zip
+                      aws --version
+                    " || echo "⚠ Could not fix AWS CLI, backups may fail"
+                  fi
+                fi
+              fi
+            else
+              echo "⚠ Skipping AWS CLI installation - frappe container is not running"
+            fi
+          else
+            echo "⚠ Skipping AWS CLI installation - frappe container not found"
+          fi
+
+          echo "=== Ensuring file backup cron job is configured ==="
+          # Make backup script executable
+          if [ -f "${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh" ]; then
+            sudo chmod +x "${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh"
+            echo "✓ Backup script is executable"
+          else
+            echo "✗ Error: Backup script not found at ${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh"
+            exit 1
+          fi
+
+          # Read backup interval (in hours) from the env file created during deploy
+          BACKUP_ENV_FILE="${{ steps.prepare.outputs.remote_path }}/deploy/dev/.env.remote"
+          BACKUP_HOURS="24"
+          if [ -f "$BACKUP_ENV_FILE" ]; then
+            VALUE=$(grep -E '^FILES_BACK_UP_HOURS=' "$BACKUP_ENV_FILE" | cut -d= -f2 | tr -d '\r')
+            if [ -n "$VALUE" ]; then
+              BACKUP_HOURS="$VALUE"
+            fi
+          fi
+          echo "Backup interval: Every $BACKUP_HOURS hours"
+
+          # Build cron schedule: run at minute 0 every BACKUP_HOURS
+          CRON_SCHEDULE="0 */$BACKUP_HOURS * * *"
+          CRON_JOB="$CRON_SCHEDULE ${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh >> /var/log/frappe-files-sync.log 2>&1"
+
+          # Ensure only one cron entry for the backup script
+          (sudo crontab -l 2>/dev/null | grep -v 'sync-files-to-s3.sh' ; echo "$CRON_JOB") | sudo crontab -
+          
+          # Verify cron job was created
+          if sudo crontab -l 2>/dev/null | grep -q "sync-files-to-s3.sh"; then
+            echo "✓ Cron job created successfully"
+            echo "Cron job details:"
+            sudo crontab -l | grep "sync-files-to-s3.sh" | sed 's/^/  /'
+          else
+            echo "✗ Error: Failed to create cron job"
+            exit 1
+          fi
+          
+          # Ensure log file directory exists and is writable
+          sudo touch /var/log/frappe-files-sync.log
+          sudo chmod 644 /var/log/frappe-files-sync.log
+          echo "✓ Log file configured: /var/log/frappe-files-sync.log"
+          
+          # Test script can be executed (syntax check only, don't actually run it)
+          echo "=== Testing backup script syntax ==="
+          if bash -n "${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh"; then
+            echo "✓ Backup script syntax is valid"
+          else
+            echo "✗ Error: Backup script has syntax errors"
+            exit 1
+          fi
+
+          # Display SSL status
+          if check_certificate_valid; then
+            CERT_EXPIRY=$(sudo openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)
+            echo ""
+            echo "✅ HTTPS is ENABLED"
+            echo "Site is accessible at: https://$DOMAIN"
+            echo "Certificate expires: $CERT_EXPIRY"
+            echo "HTTP traffic will be automatically redirected to HTTPS"
+          else
+            echo ""
+            echo "⚠️  HTTPS certificate is missing or invalid"
+            echo "Site may be accessible at: http://$DOMAIN"
+            echo "Certificate setup may have failed - check logs above"
+          fi
+          
+          # Clean up old Docker images
+          echo "=== Cleaning up old Docker images ==="
+          sudo docker system prune -f
+          
+          echo "=== Deployment completed successfully ==="
+          echo "=== Frappe HRMS should be accessible at http://${{ steps.prepare.outputs.host }} ==="
+          ENDSSH
+
+      - name: Deployment summary
+        run: |
+          echo "✅ Deployment completed successfully!"
+          echo ""
+          echo "🌐 Application URLs:"
+          echo "   Primary: https://${{ steps.prepare.outputs.host }}"
+          echo "   Fallback: https://www.${{ steps.prepare.outputs.host }}"
+          echo ""
+          echo "📦 Deployed to: ${{ steps.prepare.outputs.remote_path }}"
+          echo ""
+          echo "🔍 Troubleshooting Connection Issues:"
+          echo ""
+          echo "If you see 'ERR_CONNECTION_REFUSED', check:"
+          echo ""
+          echo "1. AWS Lightsail Security Group:"
+          echo "   - Go to AWS Lightsail → Networking → Firewall"
+          echo "   - Ensure ports 80 (HTTP) and 443 (HTTPS) are open"
+          echo "   - Add rules: HTTP (port 80) and HTTPS (port 443) from Anywhere (0.0.0.0/0)"
+          echo ""
+          echo "2. Manual Checks (SSH into server and run):"
+          echo "   sudo systemctl status nginx"
+          echo "   sudo nginx -t"
+          echo "   sudo ss -tlnp | grep -E ':80|:443'"
+          echo "   sudo docker compose -f /opt/frappe-hrms/docker/docker-compose.yml ps"
+          echo "   curl -I http://127.0.0.1:8000"
+          echo ""
+          echo "ℹ️  If HTTPS is not working:"
+          echo "   1. Check certificate status: sudo certbot certificates"
+          echo "   2. Manually renew if needed: sudo certbot renew --nginx"
+          echo "   3. Check nginx logs: sudo tail -f /var/log/nginx/error.log"
+
