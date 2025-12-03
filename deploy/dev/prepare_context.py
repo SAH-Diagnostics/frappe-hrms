@@ -71,18 +71,32 @@ def main() -> None:
     # Note: Frappe uses MariaDB/MySQL, not PostgreSQL.
     # If using Lightsail database, ensure it's MariaDB/MySQL compatible.
     env_parts: list[str] = []
-    if "DATABASE_ENDPOINT" in secret:
-        env_parts.append(f"DB_HOST={secret['DATABASE_ENDPOINT']}")
-    if "DATABASE_NAME" in secret:
-        env_parts.append(f"DB_NAME={secret['DATABASE_NAME']}")
-    if "DATABASE_USERNAME" in secret:
-        env_parts.append(f"DB_USER={secret['DATABASE_USERNAME']}")
-    if "DATABASE_PASSWORD" in secret:
-        env_parts.append(f"DB_PASSWORD={secret['DATABASE_PASSWORD']}")
-    if "DATABASE_PORT" in secret:
-        env_parts.append(f"DB_PORT={secret['DATABASE_PORT']}")
-    elif "DATABASE_ENDPOINT" in secret:
-        # Default to 3306 for MariaDB/MySQL (Frappe's default)
+
+    # Prefer DATABASE_* keys, but also support common AWS RDS_* keys so that the
+    # container always connects to the external RDS instance rather than the
+    # local MariaDB service when those are present.
+    db_host = secret.get("DATABASE_ENDPOINT") or secret.get("RDS_HOSTNAME") or secret.get("DB_HOST")
+    if db_host:
+        env_parts.append(f"DB_HOST={db_host}")
+
+    db_name = secret.get("DATABASE_NAME") or secret.get("RDS_DB_NAME") or secret.get("DB_NAME")
+    if db_name:
+        env_parts.append(f"DB_NAME={db_name}")
+
+    db_user = secret.get("DATABASE_USERNAME") or secret.get("RDS_USERNAME") or secret.get("DB_USER")
+    if db_user:
+        env_parts.append(f"DB_USER={db_user}")
+
+    db_password = secret.get("DATABASE_PASSWORD") or secret.get("RDS_PASSWORD") or secret.get("DB_PASSWORD")
+    if db_password:
+        env_parts.append(f"DB_PASSWORD={db_password}")
+
+    db_port = secret.get("DATABASE_PORT") or secret.get("RDS_PORT") or secret.get("DB_PORT")
+    if db_port:
+        env_parts.append(f"DB_PORT={db_port}")
+    elif db_host:
+        # Default to 3306 for MariaDB/MySQL (Frappe's default) when an external
+        # host is provided but no port is given.
         env_parts.append("DB_PORT=3306")
     
     # Add site name and URL

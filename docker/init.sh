@@ -15,9 +15,30 @@ DB_PORT="${DB_PORT:-3306}"
 SITE_NAME="${SITE_NAME:-hrms.localhost}"
 SITE_URL="${SITE_URL:-http://localhost:8000}"
 
-# Helper: return 0 if the site directory/config already exists
+# Helper: return 0 if the site directory/config already exists and the linked
+# database appears to have a valid Frappe schema (for external DBs).
 site_exists() {
-    [ -f "sites/${SITE_NAME}/site_config.json" ]
+    if [ ! -f "sites/${SITE_NAME}/site_config.json" ]; then
+        return 1
+    fi
+
+    # For external databases (RDS / managed MariaDB), the site directory might
+    # exist from a previous run even if the database is still empty. In that
+    # case, treat the site as "not existing" so that we go through the full
+    # new-site flow and initialise the schema instead of trying to run
+    # migrations against an empty database (which causes errors like
+    # "Table '...tabDefaultValue' doesn't exist").
+    if [ "$DB_HOST" != "mariadb" ] && command -v mysql >/dev/null 2>&1; then
+        if ! mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" \
+            -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='tabDefaultValue' LIMIT 1;" \
+            >/dev/null 2>&1; then
+            echo "Site config exists for ${SITE_NAME} but database ${DB_NAME} appears uninitialised."
+            echo "Treating as a new site so the schema can be created on the external RDS instance."
+            return 1
+        fi
+    fi
+
+    return 0
 }
 
 # Helper: for external DBs, return 0 if the database already exists
@@ -28,8 +49,13 @@ db_exists() {
     fi
 
     if command -v mysql >/dev/null 2>&1; then
+        # Consider the database "existing" only if both the schema and at least
+        # one core Frappe table (tabDefaultValue) exist. This avoids treating a
+        # brand-new, empty RDS database as fully initialised and then failing
+        # migrations with missing-table errors.
         mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" \
-            -e "USE \`$DB_NAME\`;" >/dev/null 2>&1
+            -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='tabDefaultValue' LIMIT 1;" \
+            >/dev/null 2>&1
         return $?
     fi
 
