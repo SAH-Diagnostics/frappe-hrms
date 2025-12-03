@@ -129,12 +129,17 @@ jobs:
             exit 1
           fi
       
-      - name: Create .env file for deployment
+      - name: Prepare .env file for deployment
         run: |
-          cat > deploy.env << 'EOF'
-          ${{ steps.prepare.outputs.env_content }}
-          EOF
-          echo "Environment file created:"
+          # Use the env file materialised by prepare_context.py instead of inlining
+          # a huge GitHub expression (which can exceed the max expression length).
+          if [ -f "${{ steps.prepare.outputs.env_file }}" ]; then
+            cp "${{ steps.prepare.outputs.env_file }}" deploy.env
+          else
+            echo "✗ Env file not found at ${{ steps.prepare.outputs.env_file }}"
+            exit 1
+          fi
+          echo "Environment file created from ${{ steps.prepare.outputs.env_file }}:"
           cat deploy.env
       
       - name: Copy .env file to server
