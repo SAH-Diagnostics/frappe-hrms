@@ -30,10 +30,17 @@ site_exists() {
     # "Table '...tabDefaultValue' doesn't exist").
     if [ "$DB_HOST" != "mariadb" ]; then
         if command -v mysql >/dev/null 2>&1; then
-            if ! mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" \
-                -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='tabDefaultValue' LIMIT 1;" \
-                >/dev/null 2>&1; then
-                echo "Site config exists for ${SITE_NAME} but database ${DB_NAME} appears uninitialised."
+            # IMPORTANT:
+            # The mysql client exits with status 0 even when the query returns
+            # zero rows, so we must check the *output*, not just the exit code.
+            # Otherwise an empty RDS database is treated as fully initialised,
+            # which causes migrations to fail with missing-table errors.
+            local result
+            result="$(mysql -N -s -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" \
+                -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='tabDefaultValue' LIMIT 1;" 2>/dev/null || echo "ERR")"
+
+            if [ "$result" != "1" ]; then
+                echo "Site config exists for ${SITE_NAME} but database ${DB_NAME} appears uninitialised (tabDefaultValue not found)."
                 echo "Treating as a new site so the schema can be created on the external RDS instance."
                 return 1
             fi
@@ -55,14 +62,19 @@ db_exists() {
     fi
 
     if command -v mysql >/dev/null 2>&1; then
-        # Consider the database "existing" only if both the schema and at least
-        # one core Frappe table (tabDefaultValue) exist. This avoids treating a
-        # brand-new, empty RDS database as fully initialised and then failing
-        # migrations with missing-table errors.
-        mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" \
-            -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='tabDefaultValue' LIMIT 1;" \
-            >/dev/null 2>&1
-        return $?
+        # Consider the database "existing" only if the schema AND at least one
+        # core Frappe table (tabDefaultValue) exist. Check the query output,
+        # not just the exit code, so that a brand‑new empty database is not
+        # treated as fully initialised.
+        local result
+        result="$(mysql -N -s -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" \
+            -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='tabDefaultValue' LIMIT 1;" 2>/dev/null || echo "ERR")"
+
+        if [ "$result" = "1" ]; then
+            return 0
+        fi
+
+        return 1
     fi
 
     # If mysql client is not available, fall back to site_exists check only
