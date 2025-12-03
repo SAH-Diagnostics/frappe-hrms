@@ -404,7 +404,12 @@ jobs:
           # Start nginx if not running (needed for certbot webroot validation)
           if ! sudo systemctl is-active --quiet nginx; then
             echo "Starting nginx for certificate validation..."
-            sudo systemctl start nginx
+            # On first deployment, nginx may fail to start because SSL cert files
+            # referenced in the config do not exist yet. Treat this as non-fatal
+            # so that certbot can attempt to obtain certificates.
+            if ! sudo systemctl start nginx; then
+              echo "⚠ Failed to start nginx (likely due to missing SSL certificates); continuing to certificate setup."
+            fi
           else
             # Test nginx config before reloading
             if sudo nginx -t; then
