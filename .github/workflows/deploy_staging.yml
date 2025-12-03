@@ -185,6 +185,56 @@ jobs:
           mkdir -p deploy/dev
           mv /tmp/frappe.env deploy/dev/.env.remote
           
+          echo "=== Ensuring Docker and Docker Compose are installed ==="
+          # Install Docker Engine if not present
+          if ! command -v docker &> /dev/null; then
+            echo "Docker not found, installing..."
+            sudo apt-get update
+            sudo apt-get install -y docker.io
+            sudo systemctl enable docker
+            sudo systemctl start docker
+          else
+            echo "✓ Docker is already installed"
+          fi
+
+          # Ensure current user can run docker without sudo (optional, best-effort)
+          if groups $USER | grep -q '\bdocker\b'; then
+            echo "✓ User '$USER' is already in the docker group"
+          else
+            echo "Adding user '$USER' to docker group (will take effect on next login)"
+            sudo groupadd -f docker
+            sudo usermod -aG docker $USER || true
+          fi
+
+          # Install Docker Compose plugin (docker compose) if not present
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "Docker Compose plugin not found, installing..."
+            sudo apt-get update
+            # docker-compose-plugin provides the 'docker compose' subcommand on Ubuntu
+            sudo apt-get install -y docker-compose-plugin || {
+              echo "⚠ Failed to install docker-compose-plugin via apt, trying legacy docker-compose..."
+              sudo apt-get install -y docker-compose || true
+            }
+          fi
+
+          # Final verification of docker and compose
+          if command -v docker &> /dev/null; then
+            echo "✓ Docker version:"
+            docker --version || sudo docker --version || true
+          else
+            echo "✗ Docker is still not available; deployment may fail"
+          fi
+
+          if docker compose version >/dev/null 2>&1; then
+            echo "✓ Docker Compose (plugin) is available"
+            docker compose version || true
+          elif command -v docker-compose >/dev/null 2>&1; then
+            echo "✓ Legacy docker-compose is available"
+            docker-compose version || true
+          else
+            echo "✗ Docker Compose is not available; docker compose commands may fail"
+          fi
+          
           # Trigger backup before deployment (if script exists and container is running)
           echo "=== Running pre-deployment backup ==="
           BACKUP_SCRIPT="${{ steps.prepare.outputs.remote_path }}/scripts/sync-files-to-s3.sh"
