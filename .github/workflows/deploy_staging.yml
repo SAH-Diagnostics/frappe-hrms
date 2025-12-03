@@ -263,26 +263,38 @@ jobs:
           
           # Stop existing containers
           echo "=== Stopping existing containers ==="
+          # Helper function to run Docker Compose commands using either 'docker compose' or 'docker-compose'
+          compose_cmd() {
+            if docker compose version >/dev/null 2>&1; then
+              sudo docker compose "$@"
+            elif command -v docker-compose >/dev/null 2>&1; then
+              sudo docker-compose "$@"
+            else
+              echo "✗ Docker Compose is not available; command failed: compose_cmd $*"
+              return 1
+            fi
+          }
+
           if [ -f "${{ steps.prepare.outputs.compose_file }}" ]; then
-            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote down || true
+            compose_cmd -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote down || true
           fi
           
           # Pull latest images and rebuild
           echo "=== Building and starting containers ==="
-          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote pull || true
-          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote up -d --build
+          compose_cmd -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote pull || true
+          compose_cmd -f ${{ steps.prepare.outputs.compose_file }} --env-file deploy/dev/.env.remote up -d --build
           
           echo "=== Waiting for services to be ready ==="
           sleep 15
           
           # Check container status
           echo "=== Container status ==="
-          sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -a
+          compose_cmd -f ${{ steps.prepare.outputs.compose_file }} ps -a
           
           # Check frappe container logs immediately after startup
           echo ""
           echo "=== Checking frappe container startup logs ==="
-          FRAPPE_CONTAINER=$(sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -q frappe 2>/dev/null || echo "")
+          FRAPPE_CONTAINER=$(compose_cmd -f ${{ steps.prepare.outputs.compose_file }} ps -q frappe 2>/dev/null || echo "")
           if [ -n "$FRAPPE_CONTAINER" ]; then
             echo "Frappe container ID: $FRAPPE_CONTAINER"
             CONTAINER_STATUS=$(sudo docker inspect -f '{{.State.Status}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
@@ -509,10 +521,10 @@ jobs:
           else
             echo "⚠ Warning: Frappe container may not be responding on port 8000"
             echo "Checking docker container status:"
-            sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -a
+            compose_cmd -f ${{ steps.prepare.outputs.compose_file }} ps -a
             
             # Check if frappe container exists and get its status
-            FRAPPE_CONTAINER=$(sudo docker compose -f ${{ steps.prepare.outputs.compose_file }} ps -q frappe 2>/dev/null || echo "")
+            FRAPPE_CONTAINER=$(compose_cmd -f ${{ steps.prepare.outputs.compose_file }} ps -q frappe 2>/dev/null || echo "")
             if [ -n "$FRAPPE_CONTAINER" ]; then
               echo ""
               echo "=== Frappe container logs (last 50 lines) ==="
