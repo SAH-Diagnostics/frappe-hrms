@@ -28,7 +28,15 @@ ALLOW_NEW_SITE_ON_NONEMPTY_DB="${ALLOW_NEW_SITE_ON_NONEMPTY_DB:-0}"
 # Helper: return 0 if the site directory/config already exists and the linked
 # database appears to have a valid Frappe schema (for external DBs).
 site_exists() {
+    # Check if site directory exists at all
+    if [ ! -d "sites/${SITE_NAME}" ]; then
+        return 1
+    fi
+    
+    # Check if site config file exists
     if [ ! -f "sites/${SITE_NAME}/site_config.json" ]; then
+        # Directory exists but config doesn't - treat as not existing
+        # This handles partial site creation scenarios
         return 1
     fi
 
@@ -200,6 +208,22 @@ EOF
 else
     echo "No existing site ${SITE_NAME} found, creating site with appropriate database configuration"
 
+    # Clean up any partial site directory that might exist (directory without valid config)
+    # This handles cases where a previous run failed partway through site creation
+    if [ -d "sites/${SITE_NAME}" ]; then
+        echo "Found partial site directory for ${SITE_NAME}, removing it before creating a fresh site..."
+        rm -rf "sites/${SITE_NAME}"
+    fi
+    
+    # Also clean up sites.txt registry entry if present
+    if [ -f "sites/sites.txt" ]; then
+        echo "Cleaning up sites.txt registry entry if present..."
+        grep -v "^${SITE_NAME}$" "sites/sites.txt" > "sites/sites.txt.tmp" 2>/dev/null || true
+        if [ -f "sites/sites.txt.tmp" ]; then
+            mv "sites/sites.txt.tmp" "sites/sites.txt"
+        fi
+    fi
+
     # Ensure common_site_config.json is set BEFORE any bench commands for external databases
     # This is critical for proper database connection configuration
     if [ "$DB_HOST" != "mariadb" ]; then
@@ -310,11 +334,19 @@ EOF
                 sed -i 's/dbman.flush_privileges/#dbman.flush_privileges/g' "$SETUP_DB_FILE"
             fi
 
-            # CRITICAL: Remove site directory immediately before bench new-site to avoid conflicts
+            # CRITICAL: Remove site directory and any site registry entries immediately before bench new-site
             # This handles cases where a previous failed run left behind a partial site directory
+            # or registry entries that bench new-site might check
             if [ -d "sites/${SITE_NAME}" ]; then
                 echo "Removing existing site directory to ensure clean site creation..."
                 rm -rf "sites/${SITE_NAME}"
+            fi
+            
+            # Also remove the site from sites.txt if it exists (Frappe's site registry)
+            if [ -f "sites/sites.txt" ]; then
+                echo "Removing site from sites.txt registry if present..."
+                grep -v "^${SITE_NAME}$" "sites/sites.txt" > "sites/sites.txt.tmp" 2>/dev/null || true
+                mv "sites/sites.txt.tmp" "sites/sites.txt" 2>/dev/null || true
             fi
 
             # Now create the site - it will skip user creation due to the patch
