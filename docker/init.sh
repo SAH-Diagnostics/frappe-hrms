@@ -200,6 +200,24 @@ EOF
 else
     echo "No existing site ${SITE_NAME} found, creating site with appropriate database configuration"
 
+    # Ensure common_site_config.json is set BEFORE any bench commands for external databases
+    # This is critical for proper database connection configuration
+    if [ "$DB_HOST" != "mariadb" ]; then
+        mkdir -p sites
+        cat > "sites/common_site_config.json" << EOF
+{
+    "db_host": "$DB_HOST",
+    "db_port": $DB_PORT,
+    "db_type": "mariadb",
+    "root_login": "$DB_USER",
+    "root_password": "$DB_PASSWORD",
+    "redis_cache": "redis://redis:6379",
+    "redis_queue": "redis://redis:6379",
+    "redis_socketio": "redis://redis:6379"
+}
+EOF
+    fi
+
     # Create site with appropriate database configuration
     if [ "$DB_HOST" != "mariadb" ]; then
         # External database (RDS) - use master user directly, skip user creation
@@ -214,6 +232,7 @@ else
 
             # ALWAYS update common_site_config.json when using external database
             # (don't just check if it exists, as it may have old localhost settings)
+            # This was already set above, but ensure it's correct
             cat > "sites/common_site_config.json" << EOF
 {
     "db_host": "$DB_HOST",
@@ -261,11 +280,21 @@ EOF
 
             echo "Target database ${DB_NAME} does not exist yet (or is empty), creating new site..."
 
+            # If site directory exists but database is empty, remove stale site directory
+            # This handles the case where a previous deployment failed and left behind
+            # a site directory but the database was never initialized
+            if [ -d "sites/${SITE_NAME}" ]; then
+                echo "Site directory exists but database is empty, removing stale site directory..."
+                rm -rf "sites/${SITE_NAME}"
+            fi
+
             # Generate encryption key
             ENCRYPTION_KEY=$(openssl rand -base64 32)
 
-            # Write common_site_config.json with root credentials and Redis config
+            # Write common_site_config.json with root credentials and Redis config FIRST
             # This tells Frappe to use these credentials for all DB operations
+            # Must be done before any bench commands that might need database access
+            mkdir -p sites
             cat > "sites/common_site_config.json" << EOF
 {
     "db_host": "$DB_HOST",
@@ -276,17 +305,6 @@ EOF
     "redis_cache": "redis://redis:6379",
     "redis_queue": "redis://redis:6379",
     "redis_socketio": "redis://redis:6379"
-}
-EOF
-
-            # Write site-specific config
-            mkdir -p "sites/${SITE_NAME}"
-            cat > "sites/${SITE_NAME}/site_config.json" << EOF
-{
-    "db_name": "$DB_NAME",
-    "db_user": "$DB_USER",
-    "db_password": "$DB_PASSWORD",
-    "encryption_key": "$ENCRYPTION_KEY"
 }
 EOF
 
@@ -304,7 +322,9 @@ EOF
             fi
 
             # Now create the site - it will skip user creation due to the patch
+            # Use --force flag to handle any edge cases where site directory might still exist
             bench new-site "$SITE_NAME" \
+                --force \
                 --mariadb-user-host-login-scope='%' \
                 --db-host "$DB_HOST" \
                 --db-port "$DB_PORT" \

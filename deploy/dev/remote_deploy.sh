@@ -430,49 +430,92 @@ else
   echo "⚠ Skipping AWS CLI installation - frappe container not found"
 fi
 
-echo "=== Ensuring file backup cron job is configured ==="
-if [ -f "$REMOTE_PATH/scripts/sync-files-to-s3.sh" ]; then
-  sudo chmod +x "$REMOTE_PATH/scripts/sync-files-to-s3.sh"
-  echo "✓ Backup script is executable"
-else
-  echo "✗ Error: Backup script not found at $REMOTE_PATH/scripts/sync-files-to-s3.sh"
-  exit 1
-fi
+echo "=== Checking if volume has data before configuring cron jobs ==="
+VOLUME_HAS_DATA=false
+FRAPPE_CONTAINER=$(compose_cmd -f "$COMPOSE_FILE" ps -q frappe 2>/dev/null || echo "")
 
-BACKUP_ENV_FILE="$REMOTE_PATH/deploy/dev/.env.remote"
-BACKUP_HOURS="24"
-if [ -f "$BACKUP_ENV_FILE" ]; then
-  VALUE=$(grep -E '^FILES_BACK_UP_HOURS=' "$BACKUP_ENV_FILE" | cut -d= -f2 | tr -d '\r')
-  if [ -n "$VALUE" ]; then
-    BACKUP_HOURS="$VALUE"
+if [ -n "$FRAPPE_CONTAINER" ]; then
+  CONTAINER_STATUS=$(sudo docker inspect -f '{{.State.Status}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
+  if [ "$CONTAINER_STATUS" = "running" ]; then
+    # Check if there are any site files in the volume
+    SITE_COUNT=$(sudo docker exec "$FRAPPE_CONTAINER" bash -c "find /home/frappe/frappe-bench/sites -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l" 2>/dev/null || echo "0")
+    if [ "$SITE_COUNT" -gt 0 ]; then
+      # Check if any site has actual files (not just empty directories)
+      FILE_COUNT=$(sudo docker exec "$FRAPPE_CONTAINER" bash -c "find /home/frappe/frappe-bench/sites -type f 2>/dev/null | wc -l" 2>/dev/null || echo "0")
+      if [ "$FILE_COUNT" -gt 0 ]; then
+        VOLUME_HAS_DATA=true
+        echo "✓ Volume contains data: Found $FILE_COUNT files across $SITE_COUNT site(s)"
+      else
+        echo "⚠ Volume exists but contains no files yet (fresh deployment)"
+      fi
+    else
+      echo "⚠ No sites found in volume (fresh deployment)"
+    fi
+  else
+    echo "⚠ Frappe container is not running, cannot check volume contents"
+    echo "  Container status: $CONTAINER_STATUS"
+    echo "  Will skip cron job setup for now"
   fi
-fi
-echo "Backup interval: Every $BACKUP_HOURS hours"
-
-CRON_SCHEDULE="0 */$BACKUP_HOURS * * *"
-CRON_JOB="$CRON_SCHEDULE $REMOTE_PATH/scripts/sync-files-to-s3.sh >> /var/log/frappe-files-sync.log 2>&1"
-
-(sudo crontab -l 2>/dev/null | grep -v 'sync-files-to-s3.sh' ; echo "$CRON_JOB") | sudo crontab -
-
-if sudo crontab -l 2>/dev/null | grep -q "sync-files-to-s3.sh"; then
-  echo "✓ Cron job created successfully"
-  echo "Cron job details:"
-  sudo crontab -l | grep "sync-files-to-s3.sh" | sed 's/^/  /'
 else
-  echo "✗ Error: Failed to create cron job"
-  exit 1
+  echo "⚠ Frappe container not found, cannot check volume contents"
+  echo "  Will skip cron job setup for now"
 fi
 
-sudo touch /var/log/frappe-files-sync.log
-sudo chmod 644 /var/log/frappe-files-sync.log
-echo "✓ Log file configured: /var/log/frappe-files-sync.log"
+if [ "$VOLUME_HAS_DATA" = true ]; then
+  echo "=== Ensuring file backup cron job is configured ==="
+  if [ -f "$REMOTE_PATH/scripts/sync-files-to-s3.sh" ]; then
+    sudo chmod +x "$REMOTE_PATH/scripts/sync-files-to-s3.sh"
+    echo "✓ Backup script is executable"
+  else
+    echo "✗ Error: Backup script not found at $REMOTE_PATH/scripts/sync-files-to-s3.sh"
+    exit 1
+  fi
 
-echo "=== Testing backup script syntax ==="
-if bash -n "$REMOTE_PATH/scripts/sync-files-to-s3.sh"; then
-  echo "✓ Backup script syntax is valid"
+  BACKUP_ENV_FILE="$REMOTE_PATH/deploy/dev/.env.remote"
+  BACKUP_HOURS="24"
+  if [ -f "$BACKUP_ENV_FILE" ]; then
+    VALUE=$(grep -E '^FILES_BACK_UP_HOURS=' "$BACKUP_ENV_FILE" | cut -d= -f2 | tr -d '\r')
+    if [ -n "$VALUE" ]; then
+      BACKUP_HOURS="$VALUE"
+    fi
+  fi
+  echo "Backup interval: Every $BACKUP_HOURS hours"
+
+  CRON_SCHEDULE="0 */$BACKUP_HOURS * * *"
+  CRON_JOB="$CRON_SCHEDULE $REMOTE_PATH/scripts/sync-files-to-s3.sh >> /var/log/frappe-files-sync.log 2>&1"
+
+  (sudo crontab -l 2>/dev/null | grep -v 'sync-files-to-s3.sh' ; echo "$CRON_JOB") | sudo crontab -
+
+  if sudo crontab -l 2>/dev/null | grep -q "sync-files-to-s3.sh"; then
+    echo "✓ Cron job created successfully"
+    echo "Cron job details:"
+    sudo crontab -l | grep "sync-files-to-s3.sh" | sed 's/^/  /'
+  else
+    echo "✗ Error: Failed to create cron job"
+    exit 1
+  fi
+
+  sudo touch /var/log/frappe-files-sync.log
+  sudo chmod 644 /var/log/frappe-files-sync.log
+  echo "✓ Log file configured: /var/log/frappe-files-sync.log"
+
+  echo "=== Testing backup script syntax ==="
+  if bash -n "$REMOTE_PATH/scripts/sync-files-to-s3.sh"; then
+    echo "✓ Backup script syntax is valid"
+  else
+    echo "✗ Error: Backup script has syntax errors"
+    exit 1
+  fi
 else
-  echo "✗ Error: Backup script has syntax errors"
-  exit 1
+  echo "=== Skipping cron job setup ==="
+  echo "  Volume does not contain data yet (fresh deployment)"
+  echo "  Cron jobs will be configured on the next deployment after data is present"
+  
+  # Still ensure the script is executable for future use
+  if [ -f "$REMOTE_PATH/scripts/sync-files-to-s3.sh" ]; then
+    sudo chmod +x "$REMOTE_PATH/scripts/sync-files-to-s3.sh"
+    echo "✓ Backup script is executable (ready for future cron setup)"
+  fi
 fi
 
 if check_certificate_valid; then
