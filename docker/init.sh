@@ -280,17 +280,6 @@ EOF
 
             echo "Target database ${DB_NAME} does not exist yet (or is empty), creating new site..."
 
-            # If site directory exists but database is empty, remove stale site directory
-            # This handles the case where a previous deployment failed and left behind
-            # a site directory but the database was never initialized
-            if [ -d "sites/${SITE_NAME}" ]; then
-                echo "Site directory exists but database is empty, removing stale site directory..."
-                rm -rf "sites/${SITE_NAME}"
-            fi
-
-            # Generate encryption key
-            ENCRYPTION_KEY=$(openssl rand -base64 32)
-
             # Write common_site_config.json with root credentials and Redis config FIRST
             # This tells Frappe to use these credentials for all DB operations
             # Must be done before any bench commands that might need database access
@@ -321,8 +310,15 @@ EOF
                 sed -i 's/dbman.flush_privileges/#dbman.flush_privileges/g' "$SETUP_DB_FILE"
             fi
 
+            # CRITICAL: Remove site directory immediately before bench new-site to avoid conflicts
+            # This handles cases where a previous failed run left behind a partial site directory
+            if [ -d "sites/${SITE_NAME}" ]; then
+                echo "Removing existing site directory to ensure clean site creation..."
+                rm -rf "sites/${SITE_NAME}"
+            fi
+
             # Now create the site - it will skip user creation due to the patch
-            # Use --force flag to handle any edge cases where site directory might still exist
+            # Use --force flag as a safety net in case directory recreation happens
             bench new-site "$SITE_NAME" \
                 --force \
                 --mariadb-user-host-login-scope='%' \
