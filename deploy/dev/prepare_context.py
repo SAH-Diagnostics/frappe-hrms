@@ -35,13 +35,22 @@ def main() -> None:
         fail(f"Unable to parse SECRET_JSON: {exc}")
 
     # Handle AWS Secrets Manager key-value format
-    # Keys from the image: LIGHTSAIL_IP, lightsail_host, lightsail_user, etc.
+    # Keys from the image / secret: LIGHTSAIL_IP, lightsail_host, lightsail_user, etc.
     # Map AWS secret keys to our expected keys
     secret_mapped = {}
     
     # Direct mappings (if keys match exactly)
-    for key in ["lightsail_host", "lightsail_user", "lightsail_port", "lightsail_private_key_b64", 
-                "remote_project_path", "docker_compose_file", "env_file_content"]:
+    # Note: we keep this list deliberately small and explicit so that
+    # unrecognised keys in the AWS secret do not silently change behaviour.
+    for key in [
+        "lightsail_host",
+        "lightsail_user",
+        "lightsail_port",
+        "lightsail_private_key_b64",
+        "remote_project_path",
+        "docker_compose_file",
+        "env_file_content",
+    ]:
         if key in secret:
             secret_mapped[key] = secret[key]
     
@@ -100,7 +109,7 @@ def main() -> None:
         env_parts.append("DB_PORT=3306")
     
     # Add site name and URL
-    # Use SITE_NAME from secrets if available, otherwise use domain without www
+    # Use SITE_NAME from secrets if available, otherwise derive a safe fallback
     if "SITE_NAME" in secret:
         env_parts.append(f"SITE_NAME={secret['SITE_NAME']}")
     elif "LIGHTSAIL_IP" in secret:
@@ -112,7 +121,7 @@ def main() -> None:
         site_name = secret_mapped['lightsail_host'].replace('.', '_')
         env_parts.append(f"SITE_NAME={site_name}")
     
-    # Add SITE_URL for proper host_name configuration
+    # Add SITE_URL for proper host_name configuration (required for correct redirects)
     if "SITE_URL" in secret:
         env_parts.append(f"SITE_URL={secret['SITE_URL']}")
     
@@ -133,6 +142,27 @@ def main() -> None:
     # Optional: backup interval in hours for file sync cron job
     if "FILES_BACK_UP_HOURS" in secret:
         env_parts.append(f"FILES_BACK_UP_HOURS={secret['FILES_BACK_UP_HOURS']}")
+
+    # Optional flags that influence deployment / init behaviour
+    # EXISTING_SITE is used by init.sh to decide how defensive to be when
+    # probing external database state. When true, the script will refuse to
+    # run `bench new-site` against a database that already has tables unless
+    # explicitly overridden.
+    if "EXISTING_SITE" in secret:
+        env_parts.append(f"EXISTING_SITE={secret['EXISTING_SITE']}")
+
+    # UPDATE_CODE is a generic flag that can be used by future scripts to
+    # differentiate "code-only" deploys from ones that are allowed to touch
+    # database or other resources. We simply surface it into the env file.
+    if "UPDATE_CODE" in secret:
+        env_parts.append(f"UPDATE_CODE={secret['UPDATE_CODE']}")
+
+    # Certbot / nginx configuration hints – these are consumed by the remote
+    # deploy script and nginx setup to avoid hard‑coding domains / emails.
+    if "CERTBOT_DOMAIN" in secret:
+        env_parts.append(f"CERTBOT_DOMAIN={secret['CERTBOT_DOMAIN']}")
+    if "CERTBOT_EMAIL" in secret:
+        env_parts.append(f"CERTBOT_EMAIL={secret['CERTBOT_EMAIL']}")
 
     # Add any existing env_file_content or use the built one
     if "env_file_content" in secret:

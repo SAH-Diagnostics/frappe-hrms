@@ -31,9 +31,9 @@ if [ -d "$REMOTE_PATH/.git" ]; then
   echo "=== Repository exists, pulling latest changes ==="
   cd "$REMOTE_PATH"
   sudo chown -R "$REMOTE_USER":"$REMOTE_USER" .
+  # A hard reset to the remote branch is sufficient; no need for an extra pull.
   git fetch origin
   git reset --hard origin/main
-  git pull origin main
 else
   echo "=== Cloning repository ==="
   sudo rm -rf "$REMOTE_PATH"
@@ -99,11 +99,12 @@ fi
 
 echo "=== Running pre-deployment backup ==="
 BACKUP_SCRIPT="$REMOTE_PATH/scripts/sync-files-to-s3.sh"
-CONTAINER_NAME="docker-frappe-1"
 
 if [ -f "$BACKUP_SCRIPT" ] && [ -x "$BACKUP_SCRIPT" ]; then
-  if sudo docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-    echo "Backup script found and container is running, triggering backup..."
+  # Try to detect the running frappe container using docker compose metadata
+  FRAPPE_CANDIDATE="$(sudo docker ps --filter 'label=com.docker.compose.service=frappe' --format '{{.Names}}' | head -n1 || true)"
+  if [ -n "$FRAPPE_CANDIDATE" ]; then
+    echo "Backup script found and frappe container '$FRAPPE_CANDIDATE' is running, triggering backup..."
     if sudo "$BACKUP_SCRIPT" >> /var/log/frappe-files-sync.log 2>&1; then
       echo "✓ Pre-deployment backup completed successfully"
     else
@@ -113,7 +114,7 @@ if [ -f "$BACKUP_SCRIPT" ] && [ -x "$BACKUP_SCRIPT" ]; then
       echo "Check /var/log/frappe-files-sync.log for details"
     fi
   else
-    echo "⚠ Container '$CONTAINER_NAME' is not running, skipping pre-deployment backup"
+    echo "⚠ No running frappe container detected, skipping pre-deployment backup"
     echo "This is normal on first deployment or if containers were already stopped"
   fi
 else

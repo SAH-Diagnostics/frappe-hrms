@@ -15,6 +15,16 @@ DB_PORT="${DB_PORT:-3306}"
 SITE_NAME="${SITE_NAME:-hrms.localhost}"
 SITE_URL="${SITE_URL:-http://localhost:8000}"
 
+# Safety toggles:
+# - EXISTING_SITE: when set to "true", we assume the target database should
+#   already contain a valid Frappe schema for this site. In that mode the
+#   script refuses to run `bench new-site` against a database that already
+#   has any tables.
+# - ALLOW_NEW_SITE_ON_NONEMPTY_DB: explicit escape hatch to force a new-site
+#   even if the database has existing tables (use with care).
+EXISTING_SITE_FLAG="${EXISTING_SITE:-false}"
+ALLOW_NEW_SITE_ON_NONEMPTY_DB="${ALLOW_NEW_SITE_ON_NONEMPTY_DB:-0}"
+
 # Helper: return 0 if the site directory/config already exists and the linked
 # database appears to have a valid Frappe schema (for external DBs).
 site_exists() {
@@ -79,6 +89,29 @@ db_exists() {
 
     # If mysql client is not available, fall back to site_exists check only
     return 1
+}
+
+# Helper: for external DBs, return the number of tables in the target schema.
+# This is used as a guard rail to avoid running `bench new-site` against a
+# database that already contains data.
+db_table_count() {
+    if [ "$DB_HOST" = "mariadb" ]; then
+        # For the local development DB we never block new-site.
+        echo "0"
+        return 0
+    fi
+
+    if ! command -v mysql >/dev/null 2>&1; then
+        # Unknown state – treat as 0 so that callers can decide how defensive
+        # they want to be based on EXISTING_SITE / ALLOW_NEW_SITE_ON_NONEMPTY_DB.
+        echo "0"
+        return 0
+    fi
+
+    local count
+    count="$(mysql -N -s -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" \
+        -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}';" 2>/dev/null || echo "0")"
+    echo "${count:-0}"
 }
 
 # Configure Lightsail / S3-compatible bucket for file storage if env vars are present
@@ -214,8 +247,19 @@ EOF
             echo "Running migrations against existing external database..."
             bench --site "$SITE_NAME" migrate
         else
-            # Brand new external database: perform full site creation
-            echo "Target database ${DB_NAME} does not exist yet, creating new site..."
+            # Brand new or empty external database: perform full site creation.
+            # As an additional safety check, refuse to run bench new-site
+            # against a database that already contains tables unless explicitly
+            # allowed via ALLOW_NEW_SITE_ON_NONEMPTY_DB.
+            table_count="$(db_table_count)"
+            if [ "$table_count" -gt 0 ] && [ "$ALLOW_NEW_SITE_ON_NONEMPTY_DB" != "1" ]; then
+                echo "ERROR: Refusing to run 'bench new-site' on external database ${DB_NAME} because it already has ${table_count} tables."
+                echo "If this is intentional, set ALLOW_NEW_SITE_ON_NONEMPTY_DB=1 in the environment for this deployment."
+                echo "No schema changes have been applied."
+                exit 1
+            fi
+
+            echo "Target database ${DB_NAME} does not exist yet (or is empty), creating new site..."
 
             # Generate encryption key
             ENCRYPTION_KEY=$(openssl rand -base64 32)
