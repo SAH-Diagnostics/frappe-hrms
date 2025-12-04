@@ -20,10 +20,45 @@ fi
 
 echo "=== Starting deployment ==="
 
+install_with_retry() {
+  local pkg="$1"
+  local max_attempts=10
+  local attempt=1
+  
+  while [ $attempt -le $max_attempts ]; do
+    # Check for lock files before trying
+    if sudo lsof /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo lsof /var/lib/apt/lists/lock >/dev/null 2>&1; then
+        echo "Apt lock held by another process. Waiting (attempt $attempt/$max_attempts)..."
+        sleep 10
+    else
+        if sudo apt-get install -y "$pkg"; then
+          return 0
+        fi
+        echo "Apt install failed. Retrying in 10s..."
+        sleep 10
+    fi
+    attempt=$((attempt + 1))
+  done
+  
+  echo "Failed to install $pkg after $max_attempts attempts."
+  return 1
+}
+
+# Update package list safely
+echo "Updating package lists..."
+# Retry update as well
+for i in {1..5}; do
+    if sudo apt-get update; then
+        break
+    fi
+    echo "apt-get update failed, retrying in 10s..."
+    sleep 10
+done
+
 # Install git if not present
 if ! command -v git &> /dev/null; then
   echo "Installing git..."
-  sudo apt-get update && sudo apt-get install -y git
+  install_with_retry git
 fi
 
 # Clone or pull the repository
@@ -51,8 +86,7 @@ echo "=== Ensuring Docker and Docker Compose are installed ==="
 # Install Docker Engine if not present
 if ! command -v docker &> /dev/null; then
   echo "Docker not found, installing..."
-  sudo apt-get update
-  sudo apt-get install -y docker.io
+  install_with_retry docker.io
   sudo systemctl enable docker
   sudo systemctl start docker
 else
@@ -71,11 +105,10 @@ fi
 # Install Docker Compose plugin (docker compose) if not present
 if ! docker compose version >/dev/null 2>&1; then
   echo "Docker Compose plugin not found, installing..."
-  sudo apt-get update
   # docker-compose-plugin provides the 'docker compose' subcommand on Ubuntu
-  sudo apt-get install -y docker-compose-plugin || {
+  install_with_retry docker-compose-plugin || {
     echo "⚠ Failed to install docker-compose-plugin via apt, trying legacy docker-compose..."
-    sudo apt-get install -y docker-compose || true
+    install_with_retry docker-compose || true
   }
 fi
 
@@ -138,9 +171,14 @@ if [ -f "$COMPOSE_FILE" ]; then
   compose_cmd -f "$COMPOSE_FILE" --env-file deploy/dev/.env.remote down || true
 fi
 
+echo "=== Cleaning up old Docker images (free up space) ==="
+# Prune before pull to ensure space exists
+sudo docker system prune -af || true
+
 echo "=== Building and starting containers ==="
-compose_cmd -f "$COMPOSE_FILE" --env-file deploy/dev/.env.remote pull || true
-compose_cmd -f "$COMPOSE_FILE" --env-file deploy/dev/.env.remote up -d --build
+# Build locally on the server using the Dockerfile we added
+compose_cmd -f "$COMPOSE_FILE" --env-file deploy/dev/.env.remote build
+compose_cmd -f "$COMPOSE_FILE" --env-file deploy/dev/.env.remote up -d
 
 echo "=== Waiting for services to be ready ==="
 sleep 15
@@ -173,19 +211,19 @@ echo "=== Configuring nginx and SSL certificates ==="
 
 if ! command -v nginx &> /dev/null; then
   echo "Installing nginx..."
-  sudo apt-get update
-  sudo apt-get install -y nginx
+  install_with_retry nginx
 fi
 
 if ! command -v certbot &> /dev/null; then
   echo "Installing certbot..."
-  sudo apt-get update
-  sudo apt-get install -y certbot python3-certbot-nginx
+  install_with_retry certbot
+  install_with_retry python3-certbot-nginx
 fi
 
 sudo mkdir -p /var/www/certbot
 sudo chown www-data:www-data /var/www/certbot
 
+# Extract SITE_NAME from env file for domain configuration
 SITE_NAME=$(grep -E '^SITE_NAME=' deploy/dev/.env.remote | cut -d= -f2 | tr -d '\r' || echo "dev-hrms.sahdiagnostics.com")
 DOMAIN="$SITE_NAME"
 if [[ "$DOMAIN" == www.* ]]; then
@@ -232,6 +270,7 @@ if [ ! -f "deploy/dev/nginx.conf" ]; then
 fi
 
 TEMP_NGINX="/tmp/nginx-frappe-hrms.conf"
+# Replace both dev-hrms and www.dev-hrms placeholders with actual domains
 sed "s/dev-hrms\.sahdiagnostics\.com/$DOMAIN/g; s/www\.dev-hrms\.sahdiagnostics\.com/$WWW_DOMAIN/g" deploy/dev/nginx.conf > "$TEMP_NGINX"
 
 sudo cp "$TEMP_NGINX" /etc/nginx/sites-available/frappe-hrms
@@ -255,13 +294,16 @@ fi
 
 if [ "$CERT_NEEDED" = true ]; then
   echo "=== Obtaining SSL certificate ==="
+  # Use variables for email if present
+  CERT_EMAIL="admin@sahdiagnostics.com"
+  
   sudo certbot certonly --webroot \
     -w /var/www/certbot \
     -d "$DOMAIN" \
     -d "$WWW_DOMAIN" \
     --non-interactive \
     --agree-tos \
-    --email admin@sahdiagnostics.com \
+    --email "$CERT_EMAIL" \
     --keep-until-expiring || {
     echo "⚠ Certbot webroot method failed, trying standalone method..."
     sudo systemctl stop nginx
@@ -270,7 +312,7 @@ if [ "$CERT_NEEDED" = true ]; then
       -d "$WWW_DOMAIN" \
       --non-interactive \
       --agree-tos \
-      --email admin@sahdiagnostics.com || true
+      --email "$CERT_EMAIL" || true
     sudo systemctl start nginx || true
   }
 
@@ -376,58 +418,16 @@ if command -v ufw &> /dev/null; then
 fi
 
 echo ""
-echo "=== Ensuring AWS CLI is available inside frappe container for backups ==="
+echo "=== AWS CLI Verification ==="
+# Check AWS CLI availability since we moved it to Dockerfile
 FRAPPE_CONTAINER=$(compose_cmd -f "$COMPOSE_FILE" ps -q frappe 2>/dev/null || echo "")
 if [ -n "$FRAPPE_CONTAINER" ]; then
-  CONTAINER_STATUS=$(sudo docker inspect -f '{{.State.Status}}' "$FRAPPE_CONTAINER" 2>/dev/null || echo "unknown")
-  if [ "$CONTAINER_STATUS" = "running" ]; then
-    if ! sudo docker exec "$FRAPPE_CONTAINER" bash -lc "command -v aws >/dev/null 2>&1"; then
-      echo "Installing AWS CLI v2 in frappe container..."
-      sudo docker exec "$FRAPPE_CONTAINER" bash -lc "
-        set -e
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq unzip curl
-        cd /tmp
-        curl -sS 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o awscliv2.zip
-        unzip -q awscliv2.zip
-        sudo ./aws/install
-        rm -rf aws awscliv2.zip
-        aws --version
-        echo '✓ AWS CLI v2 installed successfully'
-      " || {
-        echo "⚠ Failed to install AWS CLI v2, trying pip installation as fallback..."
-        sudo docker exec "$FRAPPE_CONTAINER" bash -lc "
-          pip3 install --user awscli --quiet || sudo pip3 install awscli --quiet
-          aws --version
-          echo '✓ AWS CLI installed via pip'
-        " || echo "⚠ Failed to install AWS CLI via pip as well"
-      }
+    if sudo docker exec "$FRAPPE_CONTAINER" bash -c "command -v aws >/dev/null 2>&1"; then
+         echo "✓ AWS CLI is available inside the container"
+         sudo docker exec "$FRAPPE_CONTAINER" aws --version
     else
-      echo "✓ AWS CLI already available in frappe container"
-      if sudo docker exec "$FRAPPE_CONTAINER" bash -lc "aws --version 2>&1" | grep -q "aws-cli"; then
-        echo "✓ AWS CLI is working correctly"
-      else
-        echo "AWS CLI has issues, attempting to fix..."
-        sudo docker exec "$FRAPPE_CONTAINER" bash -lc "pip3 install --user 'urllib3<2.0' --force-reinstall 2>/dev/null || true" || true
-        if ! sudo docker exec "$FRAPPE_CONTAINER" bash -lc "aws --version 2>&1" | grep -q "aws-cli"; then
-          echo "Reinstalling AWS CLI v2..."
-          sudo docker exec "$FRAPPE_CONTAINER" bash -lc "
-            sudo apt-get update -qq && sudo apt-get install -y -qq unzip curl
-            cd /tmp
-            curl -sS 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o awscliv2.zip
-            unzip -q awscliv2.zip
-            sudo ./aws/install
-            rm -rf aws awscliv2.zip
-            aws --version
-          " || echo "⚠ Could not fix AWS CLI, backups may fail"
-        fi
-      fi
+         echo "✗ Error: AWS CLI is NOT available inside the container despite Dockerfile update."
     fi
-  else
-    echo "⚠ Skipping AWS CLI installation - frappe container is not running"
-  fi
-else
-  echo "⚠ Skipping AWS CLI installation - frappe container not found"
 fi
 
 echo "=== Checking if volume has data before configuring cron jobs ==="
@@ -532,12 +532,7 @@ else
   echo "Certificate setup may have failed - check logs above"
 fi
 
-echo "=== Cleaning up old Docker images ==="
-sudo docker system prune -f
-
 echo "=== Deployment completed successfully ==="
 if [ -n "$DEPLOY_HOST" ]; then
   echo "=== Frappe HRMS should be accessible at http://$DEPLOY_HOST ==="
 fi
-
-

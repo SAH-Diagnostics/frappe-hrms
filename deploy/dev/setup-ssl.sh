@@ -14,8 +14,28 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-DOMAIN="dev-hrms.sahdiagnostics.com"
-WWW_DOMAIN="www.dev-hrms.sahdiagnostics.com"
+# Try to detect domain from .env.remote
+ENV_FILE="deploy/dev/.env.remote"
+SITE_NAME=""
+if [ -f "$ENV_FILE" ]; then
+    SITE_NAME=$(grep -E '^SITE_NAME=' "$ENV_FILE" | cut -d= -f2 | tr -d '\r')
+fi
+
+# Fallback or Override
+DOMAIN="${1:-${SITE_NAME:-dev-hrms.sahdiagnostics.com}}"
+
+if [[ "$DOMAIN" == www.* ]]; then
+  WWW_DOMAIN="$DOMAIN"
+  BASE_DOMAIN="${DOMAIN#www.}"
+else
+  BASE_DOMAIN="$DOMAIN"
+  WWW_DOMAIN="www.$DOMAIN"
+fi
+
+echo "Configuring SSL for:"
+echo "  Domain: $DOMAIN"
+echo "  WWW:    $WWW_DOMAIN"
+echo ""
 
 echo "This script will:"
 echo "1. Install certbot if not already installed"
@@ -102,4 +122,3 @@ echo ""
 echo "Certificates will automatically renew twice daily."
 echo "Certificate expiration: $(openssl x509 -enddate -noout -in /etc/letsencrypt/live/$DOMAIN/fullchain.pem | cut -d= -f2)"
 echo ""
-

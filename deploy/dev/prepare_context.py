@@ -100,6 +100,11 @@ def main() -> None:
     if db_password:
         env_parts.append(f"DB_PASSWORD={db_password}")
 
+    # Add ADMIN_PASSWORD if present
+    admin_password = secret.get("ADMIN_PASSWORD") or secret.get("FRA_ADMIN_PASSWORD")
+    if admin_password:
+        env_parts.append(f"ADMIN_PASSWORD={admin_password}")
+
     db_port = secret.get("DATABASE_PORT") or secret.get("RDS_PORT") or secret.get("DB_PORT")
     if db_port:
         env_parts.append(f"DB_PORT={db_port}")
