@@ -24,7 +24,7 @@ jobs:
         run: |
           .github/scripts/setup-aws-cli.sh \
             "${{ secrets.STAGING_AWS_ACCESS_KEY_ID }}" \
-            "${{ secrets.STAGING_AWS_SECRET_ACCESS_KEY }}" \
+            "${{ secrets.STAGING_AWS_SECRETS_ACCESS_KEY }}" \
             "${{ secrets.AWS_SECRETS_REGION }}"
 
       - name: Retrieve secrets from AWS Secrets Manager

@@ -30,7 +30,7 @@ fi
 
 if [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
     echo "Error: AWS_SECRET_ACCESS_KEY (argument 2) is empty or not provided"
-    echo "Hint: Check if the GitHub Secret 'STAGING_AWS_SECRET_ACCESS_KEY' is set"
+    echo "Hint: Check if the GitHub Secret 'STAGING_AWS_SECRETS_ACCESS_KEY' is set"
     exit 1
 fi
 
