@@ -2,6 +2,26 @@
 
 set -e  # Exit on error
 
+# Fix permissions on mounted volumes at startup
+echo "=== Fixing permissions ==="
+# Ensure sites directory exists and has correct permissions
+mkdir -p /home/frappe/frappe-bench/sites
+
+# Try to fix ownership (may fail if running as non-root, that's okay)
+if [ -w /home/frappe/frappe-bench/sites ]; then
+    echo "✓ Sites directory is writable"
+else
+    echo "⚠️  Sites directory is not writable, attempting to fix permissions..."
+    # Try with sudo if available, otherwise try without
+    sudo chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || \
+    chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || \
+    echo "Note: Could not change ownership (may need to run container with proper user)"
+fi
+
+# Ensure write permissions
+chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || \
+sudo chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
+
 # Determine database connection details
 # Prefer DB_* variables, fall back to RDS_* for compatibility
 DB_HOST_VALUE="${DB_HOST:-${RDS_HOSTNAME:-}}"
@@ -16,7 +36,27 @@ echo "=== Using site name: $SITE_NAME ==="
 # Check if bench already exists
 if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
     echo "=== Bench already exists ==="
-    cd frappe-bench
+    cd /home/frappe/frappe-bench
+    
+    # Fix permissions on bench directory
+    echo "Fixing permissions on bench directory..."
+    # Try multiple methods to fix permissions
+    if sudo -n true 2>/dev/null; then
+        sudo chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
+        sudo chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
+    else
+        chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
+        chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
+    fi
+    
+    # Verify permissions on critical files
+    if [ -f "/home/frappe/frappe-bench/sites/common_site_config.json" ]; then
+        if [ ! -w "/home/frappe/frappe-bench/sites/common_site_config.json" ]; then
+            echo "⚠️  common_site_config.json is not writable, fixing..."
+            chmod u+w /home/frappe/frappe-bench/sites/common_site_config.json 2>/dev/null || \
+            sudo chmod u+w /home/frappe/frappe-bench/sites/common_site_config.json 2>/dev/null || true
+        fi
+    fi
     
     # Update database configuration if environment variables are set
     if [ ! -z "$DB_HOST_VALUE" ]; then
@@ -33,6 +73,10 @@ if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
             bench set-mariadb-port 3306
         fi
     fi
+    
+    # Ensure we're in the bench directory for all commands
+    pwd
+    echo "Current directory: $(pwd)"
     
     # Check if site exists before starting
     if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
@@ -54,7 +98,15 @@ export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 
 bench init --skip-redis-config-generation frappe-bench
 
-cd frappe-bench
+cd /home/frappe/frappe-bench
+
+# Ensure proper ownership and permissions
+chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
+chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
+
+# Ensure permissions are correct before running bench commands
+chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
+chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
 
 # Configure database connection
 if [ ! -z "$DB_HOST_VALUE" ]; then

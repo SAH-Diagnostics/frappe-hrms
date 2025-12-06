@@ -79,6 +79,18 @@ echo "=== Copying .env file ==="
 cp $ENV_FILE_SOURCE $DEPLOY_DIR/.env
 chmod 600 $DEPLOY_DIR/.env
 
+echo "=== Fixing Docker volume permissions ==="
+# Ensure Docker volumes have correct permissions for frappe user (UID 1000)
+# This prevents permission errors when containers try to write to volumes
+if [ -d "$DEPLOY_DIR" ]; then
+    # Fix permissions on the deployment directory
+    sudo chown -R $LIGHTSAIL_USER:$LIGHTSAIL_USER $DEPLOY_DIR 2>/dev/null || true
+    # Create sites directory if it doesn't exist (for volume mount)
+    sudo mkdir -p $DEPLOY_DIR/sites 2>/dev/null || true
+    sudo chown -R 1000:1000 $DEPLOY_DIR/sites 2>/dev/null || true
+    sudo chmod -R 755 $DEPLOY_DIR/sites 2>/dev/null || true
+fi
+
 echo "=== Deploying with Docker Compose ==="
 cd $DEPLOY_DIR
 
