@@ -13,6 +13,31 @@ SITE_NAME="${SITE_NAME:-hrms.localhost}"
 
 echo "=== Using site name: $SITE_NAME ==="
 
+# Helper function to update site_config.json
+update_site_config() {
+    local config_file="$1"
+    local key="$2"
+    local value="$3"
+    
+    if [ ! -f "$config_file" ]; then
+        return 1
+    fi
+    
+    python3 -c "
+import json
+import sys
+try:
+    with open('$config_file', 'r') as f:
+        config = json.load(f)
+    config['$key'] = '$value'
+    with open('$config_file', 'w') as f:
+        json.dump(config, f, indent=1)
+except Exception as e:
+    print(f'Error updating $key: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null
+}
+
 # Check if bench already exists
 if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
     echo "=== Bench already exists ==="
@@ -23,6 +48,33 @@ if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
         echo "Updating database host to: $DB_HOST_VALUE:$DB_PORT_VALUE"
         bench set-mariadb-host "$DB_HOST_VALUE"
         bench set-mariadb-port "$DB_PORT_VALUE"
+        
+        # Update database credentials in site_config.json directly
+        # This is necessary because bench commands may fail with old credentials
+        SITE_CONFIG="/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json"
+        if [ -f "$SITE_CONFIG" ]; then
+            echo "Updating database credentials in site configuration..."
+            
+            # Update db_name if provided
+            if [ ! -z "$DB_NAME" ]; then
+                echo "  Updating db_name to: $DB_NAME"
+                update_site_config "$SITE_CONFIG" "db_name" "$DB_NAME" || echo "    ⚠️  Could not update db_name"
+            fi
+            
+            # Update db_user if provided (and not default)
+            if [ ! -z "$DB_USER_VALUE" ] && [ "$DB_USER_VALUE" != "root" ]; then
+                echo "  Updating db_user to: $DB_USER_VALUE"
+                update_site_config "$SITE_CONFIG" "db_user" "$DB_USER_VALUE" || echo "    ⚠️  Could not update db_user"
+            fi
+            
+            # Update db_password if provided (and not default)
+            if [ ! -z "$DB_PASSWORD_VALUE" ] && [ "$DB_PASSWORD_VALUE" != "123" ]; then
+                echo "  Updating db_password"
+                update_site_config "$SITE_CONFIG" "db_password" "$DB_PASSWORD_VALUE" || echo "    ⚠️  Could not update db_password"
+            fi
+        else
+            echo "⚠️  Site config file not found at $SITE_CONFIG"
+        fi
     else
         echo "Using existing database configuration"
         # Ensure it's set to local mariadb if not already configured
