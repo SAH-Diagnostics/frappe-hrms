@@ -81,26 +81,37 @@ echo "=== Getting apps ==="
 bench get-app erpnext
 bench get-app hrms
 
-# Check if site already exists in database before creating
-echo "=== Checking if site exists ==="
-if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
-    echo "✓ Site $SITE_NAME already exists in database"
-    
-    if [ "$EXISTING_SITE" = "true" ]; then
-        echo "  EXISTING_SITE=true: Using existing site data"
+# Remove site directory if it exists (from previous failed attempts or volume persistence)
+# This MUST be done before attempting to create site, as bench checks directory first
+echo "=== Checking for existing site directory ==="
+if [ -d "/home/frappe/frappe-bench/sites/$SITE_NAME" ]; then
+    echo "⚠️  Site directory exists, removing it to allow fresh site creation..."
+    rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME"
+    echo "✓ Site directory removed"
+fi
+
+# Check if site already exists in database (only if EXISTING_SITE is true)
+if [ "$EXISTING_SITE" = "true" ]; then
+    echo "=== EXISTING_SITE=true: Checking if site exists in database ==="
+    # Create a minimal site directory structure to check database
+    mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME"
+    if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
+        echo "✓ Site $SITE_NAME exists in database, using existing site"
     else
-        echo "  ⚠️  Site exists but EXISTING_SITE not set to 'true'"
-        echo "  This may indicate the database already has data."
-        echo "  Set EXISTING_SITE=true to use existing site, or use a different site name."
-        exit 1
+        echo "⚠️  EXISTING_SITE=true but site does not exist in database"
+        echo "  Creating new site instead..."
+        rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME"
+        EXISTING_SITE="false"
     fi
-else
-    echo "Site $SITE_NAME does not exist, creating new site..."
+fi
+
+# Create new site if needed
+if [ "$EXISTING_SITE" != "true" ]; then
+    echo "=== Creating new site: $SITE_NAME ==="
     
-    # Remove site directory if it exists (from previous failed attempts or volume persistence)
-    # This is necessary because bench new-site will fail if site directory exists, even with --force
+    # Ensure site directory doesn't exist (double-check)
     if [ -d "/home/frappe/frappe-bench/sites/$SITE_NAME" ]; then
-        echo "⚠️  Site directory exists but site is not functional, removing it..."
+        echo "⚠️  Removing stale site directory..."
         rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME"
         echo "✓ Site directory removed"
     fi
@@ -121,12 +132,22 @@ else
         fi
     fi
     
+    # Create site with force flag to overwrite any remaining traces
     bench new-site "$SITE_NAME" \
     --force \
     --mariadb-root-password "$DB_PASSWORD_VALUE" \
     --mariadb-root-username "$DB_USER_VALUE" \
     --admin-password "$ADMIN_PASSWORD_VALUE" \
-    --no-mariadb-socket
+    --no-mariadb-socket || {
+        echo "✗ Error: Failed to create site. Attempting to remove site directory and retry..."
+        rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME"
+        bench new-site "$SITE_NAME" \
+        --force \
+        --mariadb-root-password "$DB_PASSWORD_VALUE" \
+        --mariadb-root-username "$DB_USER_VALUE" \
+        --admin-password "$ADMIN_PASSWORD_VALUE" \
+        --no-mariadb-socket
+    }
     
     echo "=== Installing HRMS app ==="
     bench --site "$SITE_NAME" install-app hrms
