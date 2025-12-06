@@ -18,7 +18,7 @@ if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
     echo "=== Bench already exists ==="
     cd frappe-bench
     
-    # Update database host if environment variable is set (for switching databases)
+    # Update database configuration if environment variables are set
     if [ ! -z "$DB_HOST_VALUE" ]; then
         echo "Updating database host to: $DB_HOST_VALUE:$DB_PORT_VALUE"
         bench set-mariadb-host "$DB_HOST_VALUE"
