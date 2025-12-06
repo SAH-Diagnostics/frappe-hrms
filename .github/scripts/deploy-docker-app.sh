@@ -48,20 +48,14 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-# Determine which Docker Compose command to use
-USE_DOCKER_COMPOSE_PLUGIN=false
-if docker compose version &> /dev/null 2>&1; then
-    echo "✓ Using Docker Compose plugin"
-    docker compose version
-    USE_DOCKER_COMPOSE_PLUGIN=true
-elif command -v docker-compose &> /dev/null && docker-compose version &> /dev/null 2>&1; then
-    echo "✓ Using standalone docker-compose"
-    docker-compose version
-    USE_DOCKER_COMPOSE_PLUGIN=false
-else
-    echo "Error: Docker Compose is not available. Please run install-docker-dependencies.sh first"
+# Verify Docker Compose plugin is available
+if ! docker compose version &> /dev/null 2>&1; then
+    echo "Error: Docker Compose plugin is not available. Please run install-docker-dependencies.sh first"
     exit 1
 fi
+
+echo "✓ Using Docker Compose plugin"
+docker compose version
 
 echo "=== Creating deployment directory ==="
 sudo mkdir -p $DEPLOY_DIR
@@ -88,30 +82,16 @@ chmod 600 $DEPLOY_DIR/.env
 echo "=== Deploying with Docker Compose ==="
 cd $DEPLOY_DIR
 
-# Use the detected Docker Compose command
-if [ "$USE_DOCKER_COMPOSE_PLUGIN" = "true" ]; then
-    echo "Using: docker compose"
-    sudo docker compose -f $DOCKER_COMPOSE_FILE down || true
-    sudo docker compose -f $DOCKER_COMPOSE_FILE up -d --build
-    
-    echo "=== Verifying containers ==="
-    sleep 5
-    sudo docker compose -f $DOCKER_COMPOSE_FILE ps
-    
-    echo "=== Container logs (last 50 lines) ==="
-    sudo docker compose -f $DOCKER_COMPOSE_FILE logs --tail=50
-else
-    echo "Using: docker-compose"
-    sudo docker-compose -f $DOCKER_COMPOSE_FILE down || true
-    sudo docker-compose -f $DOCKER_COMPOSE_FILE up -d --build
-    
-    echo "=== Verifying containers ==="
-    sleep 5
-    sudo docker-compose -f $DOCKER_COMPOSE_FILE ps
-    
-    echo "=== Container logs (last 50 lines) ==="
-    sudo docker-compose -f $DOCKER_COMPOSE_FILE logs --tail=50
-fi
+# Use docker compose (plugin)
+sudo docker compose -f $DOCKER_COMPOSE_FILE down || true
+sudo docker compose -f $DOCKER_COMPOSE_FILE up -d --build
+
+echo "=== Verifying containers ==="
+sleep 5
+sudo docker compose -f $DOCKER_COMPOSE_FILE ps
+
+echo "=== Container logs (last 50 lines) ==="
+sudo docker compose -f $DOCKER_COMPOSE_FILE logs --tail=50
 
 echo "✓ Deployment completed successfully"
 EOF
