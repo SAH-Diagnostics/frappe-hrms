@@ -102,14 +102,39 @@ else
   sudo usermod -aG docker "$USER" || true
 fi
 
-# Install Docker Compose plugin (docker compose) if not present
-if ! docker compose version >/dev/null 2>&1; then
-  echo "Docker Compose plugin not found, installing..."
-  # docker-compose-plugin provides the 'docker compose' subcommand on Ubuntu
-  install_with_retry docker-compose-plugin || {
-    echo "⚠ Failed to install docker-compose-plugin via apt, trying legacy docker-compose..."
-    install_with_retry docker-compose || true
-  }
+# Install Docker Compose if not present
+if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
+  echo "Docker Compose not found, installing..."
+  
+  # Try to install docker-compose-plugin from apt first (if Docker repo is configured)
+  if ! install_with_retry docker-compose-plugin 2>/dev/null; then
+    echo "⚠ docker-compose-plugin not available via apt, installing standalone docker-compose binary..."
+    
+    # Install curl if not present (needed to download docker-compose)
+    if ! command -v curl >/dev/null 2>&1; then
+      echo "Installing curl..."
+      install_with_retry curl
+    fi
+    
+    # Install standalone docker-compose binary (v2.x)
+    DOCKER_COMPOSE_VERSION="v2.24.0"
+    DOCKER_COMPOSE_URL="https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64"
+    
+    if sudo curl -L "$DOCKER_COMPOSE_URL" -o /usr/local/bin/docker-compose 2>/dev/null; then
+      sudo chmod +x /usr/local/bin/docker-compose
+      echo "✓ Installed standalone docker-compose binary (v${DOCKER_COMPOSE_VERSION})"
+    else
+      echo "⚠ Failed to download docker-compose binary, trying legacy python package..."
+      # Fallback to legacy docker-compose (if available in repos)
+      install_with_retry docker-compose || {
+        echo "✗ Failed to install docker-compose. Deployment may fail."
+      }
+    fi
+  fi
+elif docker compose version >/dev/null 2>&1; then
+  echo "✓ Docker Compose plugin is already available"
+elif command -v docker-compose >/dev/null 2>&1; then
+  echo "✓ Legacy docker-compose is already available"
 fi
 
 # Final verification of docker and compose
