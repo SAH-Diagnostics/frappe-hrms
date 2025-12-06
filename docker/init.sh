@@ -33,73 +33,107 @@ SITE_NAME="${SITE_NAME:-hrms.localhost}"
 
 echo "=== Using site name: $SITE_NAME ==="
 
-# Check if bench already exists
-if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
+# Check if bench already exists (check multiple indicators)
+BENCH_EXISTS=false
+if [ -d "/home/frappe/frappe-bench" ]; then
+    # Check if it's a valid bench by looking for bench config or apps directory
+    if [ -d "/home/frappe/frappe-bench/apps" ] || [ -f "/home/frappe/frappe-bench/sites/common_site_config.json" ] || [ -f "/home/frappe/frappe-bench/.git/config" ]; then
+        BENCH_EXISTS=true
+    fi
+fi
+
+if [ "$BENCH_EXISTS" = "true" ]; then
     echo "=== Bench already exists ==="
-    cd /home/frappe/frappe-bench
-    
-    # Fix permissions on bench directory
-    echo "Fixing permissions on bench directory..."
-    # Try multiple methods to fix permissions
-    if sudo -n true 2>/dev/null; then
-        sudo chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
-        sudo chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
-    else
-        chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
-        chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
-    fi
-    
-    # Verify permissions on critical files
-    if [ -f "/home/frappe/frappe-bench/sites/common_site_config.json" ]; then
-        if [ ! -w "/home/frappe/frappe-bench/sites/common_site_config.json" ]; then
-            echo "⚠️  common_site_config.json is not writable, fixing..."
-            chmod u+w /home/frappe/frappe-bench/sites/common_site_config.json 2>/dev/null || \
-            sudo chmod u+w /home/frappe/frappe-bench/sites/common_site_config.json 2>/dev/null || true
-        fi
-    fi
-    
-    # Ensure we're in the bench directory for all commands
-    cd /home/frappe/frappe-bench
-    pwd
-    echo "Current directory: $(pwd)"
-    
-    # Update database configuration if environment variables are set
-    if [ ! -z "$DB_HOST_VALUE" ]; then
-        echo "Updating database host to: $DB_HOST_VALUE:$DB_PORT_VALUE"
-        bench set-mariadb-host "$DB_HOST_VALUE" || bench set-config db_host "$DB_HOST_VALUE"
-        bench set-config db_port "$DB_PORT_VALUE" 2>/dev/null || true
-    else
-        echo "Using existing database configuration"
-        # Ensure it's set to local mariadb if not already configured
-        CURRENT_HOST=$(bench get-config db_host 2>/dev/null || echo "")
-        if [ -z "$CURRENT_HOST" ] || [ "$CURRENT_HOST" = "localhost" ]; then
-            echo "Setting database host to local mariadb container"
-            bench set-mariadb-host mariadb || bench set-config db_host mariadb
-            bench set-config db_port 3306 2>/dev/null || true
-        fi
-    fi
-    
-    # Check if site exists before starting
-    if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
-        echo "✓ Site $SITE_NAME exists, starting bench..."
-        bench start
-    else
-        echo "⚠️  Site $SITE_NAME does not exist in database"
-        echo "   Bench exists but site is missing. Please create the site manually or"
-        echo "   remove the bench directory to reinitialize."
+    cd /home/frappe/frappe-bench || {
+        echo "Error: Cannot change to bench directory"
         exit 1
+    }
+    
+    # Verify we're in a valid bench directory
+    if ! bench --version >/dev/null 2>&1 && [ ! -f "sites/common_site_config.json" ]; then
+        echo "⚠️  Directory exists but is not a valid bench, will reinitialize..."
+        BENCH_EXISTS=false
+    else
+        echo "✓ Valid bench directory found"
+        
+        # Fix permissions on bench directory
+        echo "Fixing permissions on bench directory..."
+        # Try multiple methods to fix permissions
+        if sudo -n true 2>/dev/null; then
+            sudo chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
+            sudo chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
+        else
+            chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
+            chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
+        fi
+        
+        # Verify permissions on critical files
+        if [ -f "/home/frappe/frappe-bench/sites/common_site_config.json" ]; then
+            if [ ! -w "/home/frappe/frappe-bench/sites/common_site_config.json" ]; then
+                echo "⚠️  common_site_config.json is not writable, fixing..."
+                chmod u+w /home/frappe/frappe-bench/sites/common_site_config.json 2>/dev/null || \
+                sudo chmod u+w /home/frappe/frappe-bench/sites/common_site_config.json 2>/dev/null || true
+            fi
+        fi
+        
+        # Ensure we're in the bench directory for all commands
+        cd /home/frappe/frappe-bench
+        pwd
+        echo "Current directory: $(pwd)"
+        
+        # Update database configuration if environment variables are set
+        if [ ! -z "$DB_HOST_VALUE" ]; then
+            echo "Updating database host to: $DB_HOST_VALUE:$DB_PORT_VALUE"
+            (cd /home/frappe/frappe-bench && bench set-mariadb-host "$DB_HOST_VALUE" 2>/dev/null) || \
+            (cd /home/frappe/frappe-bench && bench set-config db_host "$DB_HOST_VALUE" 2>/dev/null) || true
+            (cd /home/frappe/frappe-bench && bench set-config db_port "$DB_PORT_VALUE" 2>/dev/null) || true
+        else
+            echo "Using existing database configuration"
+            # Ensure it's set to local mariadb if not already configured
+            CURRENT_HOST=$(cd /home/frappe/frappe-bench && bench get-config db_host 2>/dev/null || echo "")
+            if [ -z "$CURRENT_HOST" ] || [ "$CURRENT_HOST" = "localhost" ]; then
+                echo "Setting database host to local mariadb container"
+                (cd /home/frappe/frappe-bench && bench set-mariadb-host mariadb 2>/dev/null) || \
+                (cd /home/frappe/frappe-bench && bench set-config db_host mariadb 2>/dev/null) || true
+                (cd /home/frappe/frappe-bench && bench set-config db_port 3306 2>/dev/null) || true
+            fi
+        fi
+        
+        # Check if site exists before starting
+        if (cd /home/frappe/frappe-bench && bench --site "$SITE_NAME" list-apps >/dev/null 2>&1); then
+            echo "✓ Site $SITE_NAME exists, starting bench..."
+            cd /home/frappe/frappe-bench
+            bench start
+        else
+            echo "⚠️  Site $SITE_NAME does not exist in database"
+            echo "   Bench exists but site is missing. Please create the site manually or"
+            echo "   remove the bench directory to reinitialize."
+            exit 1
+        fi
+        exit 0
     fi
-    exit 0
 fi
 
 # Fresh installation path
 echo "=== Creating new bench ==="
 
+# Remove existing bench directory if it's not valid
+if [ -d "/home/frappe/frappe-bench" ] && [ "$BENCH_EXISTS" = "false" ]; then
+    echo "Removing invalid bench directory..."
+    rm -rf /home/frappe/frappe-bench
+fi
+
 export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
+
+# Change to home directory before initializing bench
+cd /home/frappe
 
 bench init --skip-redis-config-generation frappe-bench
 
-cd /home/frappe/frappe-bench
+cd /home/frappe/frappe-bench || {
+    echo "Error: Bench initialization failed or directory not found"
+    exit 1
+}
 
 # Ensure proper ownership and permissions
 chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
@@ -109,21 +143,28 @@ chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
 chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
 chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
 
+# Ensure we're in the bench directory
+cd /home/frappe/frappe-bench
+pwd
+echo "Current directory: $(pwd)"
+
 # Configure database connection
 if [ ! -z "$DB_HOST_VALUE" ]; then
     echo "Connecting to external database: $DB_HOST_VALUE:$DB_PORT_VALUE"
-    bench set-mariadb-host "$DB_HOST_VALUE" || bench set-config db_host "$DB_HOST_VALUE"
-    bench set-config db_port "$DB_PORT_VALUE" 2>/dev/null || true
+    (cd /home/frappe/frappe-bench && bench set-mariadb-host "$DB_HOST_VALUE" 2>/dev/null) || \
+    (cd /home/frappe/frappe-bench && bench set-config db_host "$DB_HOST_VALUE" 2>/dev/null) || true
+    (cd /home/frappe/frappe-bench && bench set-config db_port "$DB_PORT_VALUE" 2>/dev/null) || true
 else
     echo "Using local MariaDB container"
-    bench set-mariadb-host mariadb || bench set-config db_host mariadb
-    bench set-config db_port 3306 2>/dev/null || true
+    (cd /home/frappe/frappe-bench && bench set-mariadb-host mariadb 2>/dev/null) || \
+    (cd /home/frappe/frappe-bench && bench set-config db_host mariadb 2>/dev/null) || true
+    (cd /home/frappe/frappe-bench && bench set-config db_port 3306 2>/dev/null) || true
 fi
 
 # Configure Redis
-bench set-redis-cache-host redis://redis:6379
-bench set-redis-queue-host redis://redis:6379
-bench set-redis-socketio-host redis://redis:6379
+(cd /home/frappe/frappe-bench && bench set-redis-cache-host redis://redis:6379) || true
+(cd /home/frappe/frappe-bench && bench set-redis-queue-host redis://redis:6379) || true
+(cd /home/frappe/frappe-bench && bench set-redis-socketio-host redis://redis:6379) || true
 
 # Remove redis, watch from Procfile
 sed -i '/redis/d' ./Procfile 2>/dev/null || true
@@ -131,8 +172,9 @@ sed -i '/watch/d' ./Procfile 2>/dev/null || true
 
 # Get apps
 echo "=== Getting apps ==="
-bench get-app erpnext
-bench get-app hrms
+cd /home/frappe/frappe-bench
+bench get-app erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
+bench get-app hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
 # Remove site directory if it exists (from previous failed attempts or volume persistence)
 # This MUST be done before attempting to create site, as bench checks directory first
@@ -209,8 +251,10 @@ if [ "$EXISTING_SITE" != "true" ]; then
 fi
 
 # Final configuration
-bench --site "$SITE_NAME" clear-cache
-bench use "$SITE_NAME"
+cd /home/frappe/frappe-bench
+bench --site "$SITE_NAME" clear-cache || true
+bench use "$SITE_NAME" || true
 
 echo "=== Starting bench ==="
+cd /home/frappe/frappe-bench
 bench start
