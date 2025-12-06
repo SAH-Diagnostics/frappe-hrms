@@ -1,0 +1,173 @@
+name: Configure Nginx and Certbot for Staging
+
+on:
+  push:
+    branches:
+      - staging
+    paths:
+      - 'nginx/**'
+      - '.github/workflows/configure-nginx-staging.yml'
+  workflow_dispatch:
+
+jobs:
+  configure-nginx:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Make scripts executable
+        run: chmod +x .github/scripts/*.sh
+
+      - name: Setup AWS CLI
+        run: |
+          .github/scripts/setup-aws-cli.sh \
+            "${{ secrets.STAGING_AWS_ACCESS_KEY_ID }}" \
+            "${{ secrets.STAGING_AWS_SECRET_ACCESS_KEY }}" \
+            "${{ secrets.AWS_SECRETS_REGION }}"
+
+      - name: Retrieve secrets from AWS Secrets Manager
+        run: |
+          .github/scripts/fetch-aws-secrets.sh \
+            "${{ secrets.STAGING_AWS_DEPLOY_SECRET_ID }}" \
+            "${{ github.workspace }}/secrets.env"
+          source ${{ github.workspace }}/secrets.env
+
+      - name: Load secrets as environment variables
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          # Export all variables for use in subsequent steps
+          while IFS='=' read -r key value; do
+            # Skip comments and empty lines
+            [[ "$key" =~ ^#.*$ ]] && continue
+            [[ -z "$key" ]] && continue
+            echo "$key=$value" >> $GITHUB_ENV
+          done < ${{ github.workspace }}/secrets.env
+
+      - name: Setup SSH connection
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/setup-ssh.sh \
+            "$lightsail_private_key_b64" \
+            "$lightsail_host" \
+            "$lightsail_user" \
+            "${lightsail_port:-22}"
+
+      - name: Test SSH connection
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/test-ssh-connection.sh \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
+
+      - name: Generate Nginx configuration
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          cat > ${{ github.workspace }}/nginx.conf << EOF
+          upstream frappe {
+              server localhost:8000;
+          }
+          
+          server {
+              listen 80;
+              server_name $CERTBOT_DOMAIN;
+              
+              client_max_body_size 50M;
+              
+              location / {
+                  proxy_pass http://frappe;
+                  proxy_set_header Host \$host;
+                  proxy_set_header X-Real-IP \$remote_addr;
+                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto \$scheme;
+                  proxy_read_timeout 300s;
+              }
+              
+              location /assets {
+                  proxy_pass http://frappe;
+                  expires 7d;
+                  add_header Cache-Control "public, immutable";
+              }
+          }
+          EOF
+          echo "✓ Nginx configuration generated"
+
+      - name: Configure Nginx
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/configure-nginx.sh \
+            "$SITE_NAME" \
+            "$CERTBOT_DOMAIN" \
+            "${{ github.workspace }}/nginx.conf" \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
+
+      - name: Setup SSL certificate
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/setup-certbot.sh \
+            "$CERTBOT_DOMAIN" \
+            "$CERTBOT_EMAIL" \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
+
+      - name: Get certificate details
+        if: always()
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          ssh -i ~/.ssh/lightsail_key -p "${lightsail_port:-22}" -o StrictHostKeyChecking=accept-new \
+            "$lightsail_user@$lightsail_host" \
+            "sudo certbot certificates" > certificate_details.txt 2>&1 || true
+
+      - name: Get nginx status
+        if: always()
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          ssh -i ~/.ssh/lightsail_key -p "${lightsail_port:-22}" -o StrictHostKeyChecking=accept-new \
+            "$lightsail_user@$lightsail_host" \
+            "sudo systemctl status nginx --no-pager -l" > nginx_status.txt 2>&1 || true
+
+      - name: Create configuration summary
+        if: always()
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          {
+            echo "## Nginx and SSL Configuration Summary"
+            echo ""
+            if [ "${{ job.status }}" == "success" ]; then
+              echo "✅ **Status**: Configuration completed successfully"
+            else
+              echo "❌ **Status**: Configuration failed"
+            fi
+            echo ""
+            echo "### Site Details"
+            echo "- **Site Name**: $SITE_NAME"
+            echo "- **Domain**: $CERTBOT_DOMAIN"
+            echo "- **Secure URL**: https://$CERTBOT_DOMAIN"
+            echo ""
+            echo "### Nginx Status"
+            echo '```'
+            cat nginx_status.txt 2>/dev/null || echo "Unable to retrieve nginx status"
+            echo '```'
+            echo ""
+            echo "### SSL Certificate Details"
+            echo '```'
+            cat certificate_details.txt 2>/dev/null || echo "Unable to retrieve certificate details"
+            echo '```'
+            echo ""
+            echo "### Configuration Time"
+            echo "- $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ${{ github.workspace }}/secrets.env
+          rm -f ${{ github.workspace }}/nginx.conf
+          rm -f certificate_details.txt
+          rm -f nginx_status.txt
+

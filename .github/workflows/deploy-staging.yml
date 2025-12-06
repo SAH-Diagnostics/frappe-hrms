@@ -1,0 +1,143 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches:
+      - staging
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Make scripts executable
+        run: chmod +x .github/scripts/*.sh
+
+      - name: Setup AWS CLI
+        run: |
+          .github/scripts/setup-aws-cli.sh \
+            "${{ secrets.STAGING_AWS_ACCESS_KEY_ID }}" \
+            "${{ secrets.STAGING_AWS_SECRET_ACCESS_KEY }}" \
+            "${{ secrets.AWS_SECRETS_REGION }}"
+
+      - name: Retrieve secrets from AWS Secrets Manager
+        run: |
+          .github/scripts/fetch-aws-secrets.sh \
+            "${{ secrets.STAGING_AWS_DEPLOY_SECRET_ID }}" \
+            "${{ github.workspace }}/secrets.env"
+
+      - name: Load secrets as environment variables
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          # Export all variables for use in subsequent steps
+          while IFS='=' read -r key value; do
+            # Skip comments and empty lines
+            [[ "$key" =~ ^#.*$ ]] && continue
+            [[ -z "$key" ]] && continue
+            echo "$key=$value" >> $GITHUB_ENV
+          done < ${{ github.workspace }}/secrets.env
+
+      - name: Generate environment file
+        run: |
+          .github/scripts/generate-env-file.sh \
+            "${{ github.workspace }}/secrets.env" \
+            "${{ github.workspace }}/.env"
+
+      - name: Setup SSH connection
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/setup-ssh.sh \
+            "$lightsail_private_key_b64" \
+            "$lightsail_host" \
+            "$lightsail_user" \
+            "${lightsail_port:-22}"
+
+      - name: Test SSH connection
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/test-ssh-connection.sh \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
+
+      - name: Transfer environment file
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/copy-file-to-instance.sh \
+            "${{ github.workspace }}/.env" \
+            "/home/$lightsail_user/.env" \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
+
+      - name: Deploy application
+        id: deploy
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/deploy-docker-app.sh \
+            "${{ github.server_url }}/${{ github.repository }}.git" \
+            "/opt/app" \
+            "/home/$lightsail_user/.env" \
+            "docker/docker-compose.yml" \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
+
+      - name: Setup backup cron job
+        if: success()
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/setup-backup-cron.sh \
+            "$SITE_URL" \
+            "$BUCKET_NAME" \
+            "${FILES_BACK_UP_HOURS:-24}" \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
+
+      - name: Get container status
+        if: always()
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          ssh -i ~/.ssh/lightsail_key -p "${lightsail_port:-22}" -o StrictHostKeyChecking=accept-new \
+            "$lightsail_user@$lightsail_host" \
+            "cd /opt/app && sudo docker compose ps" > container_status.txt || true
+
+      - name: Create deployment summary
+        if: always()
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          {
+            echo "## Deployment Summary"
+            echo ""
+            if [ "${{ job.status }}" == "success" ]; then
+              echo "✅ **Status**: Deployment completed successfully"
+            else
+              echo "❌ **Status**: Deployment failed"
+            fi
+            echo ""
+            echo "### Application Details"
+            echo "- **Site URL**: https://$CERTBOT_DOMAIN"
+            echo "- **Site Name**: $SITE_NAME"
+            echo "- **Backup Schedule**: Every ${FILES_BACK_UP_HOURS:-24} hours"
+            echo ""
+            echo "### Container Status"
+            echo '```'
+            cat container_status.txt 2>/dev/null || echo "Unable to retrieve container status"
+            echo '```'
+            echo ""
+            echo "### Deployment Time"
+            echo "- $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup secrets
+        if: always()
+        run: |
+          rm -f ${{ github.workspace }}/secrets.env
+          rm -f ${{ github.workspace }}/.env
+          rm -f container_status.txt
+
