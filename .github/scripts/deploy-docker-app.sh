@@ -41,62 +41,27 @@ echo "  Docker Compose File: $DOCKER_COMPOSE_FILE"
 ssh -i "$SSH_KEY_PATH" -p "$LIGHTSAIL_PORT" -o StrictHostKeyChecking=accept-new "$LIGHTSAIL_USER@$LIGHTSAIL_HOST" << EOF
 set -e
 
-echo "=== Installing/verifying Docker and Docker Compose ==="
-sudo apt-get update
-sudo apt-get install -y docker.io || true
-
-# Install Docker Compose (try plugin first, fallback to standalone)
-if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
-    echo "Installing Docker Compose..."
-    # Try to install docker-compose-plugin
-    if sudo apt-get install -y docker-compose-plugin 2>/dev/null; then
-        echo "✓ Docker Compose plugin installed"
-    else
-        # Fallback to standalone docker-compose
-        echo "Installing standalone docker-compose..."
-        DOCKER_COMPOSE_VERSION="v2.24.0"
-        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-        ARCH=$(uname -m)
-        # Map architecture names
-        case "$ARCH" in
-            x86_64) ARCH="x86_64" ;;
-            aarch64) ARCH="aarch64" ;;
-            armv7l) ARCH="armv7" ;;
-            *) ARCH="x86_64" ;;
-        esac
-        sudo curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-${OS}-${ARCH}" -o /usr/local/bin/docker-compose
-        sudo chmod +x /usr/local/bin/docker-compose
-        # Verify installation
-        if docker-compose version &> /dev/null; then
-            echo "✓ Standalone docker-compose installed successfully"
-        else
-            echo "Warning: docker-compose installation may have failed"
-        fi
-    fi
-fi
-
-sudo systemctl enable docker
-sudo systemctl start docker
-
-# Add user to docker group to avoid sudo (optional, but helpful)
-sudo usermod -aG docker $LIGHTSAIL_USER || true
-
-# Verify Docker Compose installation and determine which command to use
-echo "Verifying Docker Compose installation..."
-USE_DOCKER_COMPOSE_PLUGIN=false
-if docker compose version &> /dev/null 2>&1; then
-    echo "✓ Docker Compose plugin is available"
-    USE_DOCKER_COMPOSE_PLUGIN=true
-elif docker-compose version &> /dev/null 2>&1; then
-    echo "✓ Standalone docker-compose is available"
-    USE_DOCKER_COMPOSE_PLUGIN=false
-else
-    echo "Error: Docker Compose is not available"
+# Verify Docker and Docker Compose are available
+echo "=== Verifying Docker and Docker Compose ==="
+if ! command -v docker &> /dev/null; then
+    echo "Error: Docker is not installed. Please run install-docker-dependencies.sh first"
     exit 1
 fi
 
-echo "=== Installing nginx and certbot ==="
-sudo apt-get install -y nginx certbot python3-certbot-nginx || true
+# Determine which Docker Compose command to use
+USE_DOCKER_COMPOSE_PLUGIN=false
+if docker compose version &> /dev/null 2>&1; then
+    echo "✓ Using Docker Compose plugin"
+    docker compose version
+    USE_DOCKER_COMPOSE_PLUGIN=true
+elif command -v docker-compose &> /dev/null && docker-compose version &> /dev/null 2>&1; then
+    echo "✓ Using standalone docker-compose"
+    docker-compose version
+    USE_DOCKER_COMPOSE_PLUGIN=false
+else
+    echo "Error: Docker Compose is not available. Please run install-docker-dependencies.sh first"
+    exit 1
+fi
 
 echo "=== Creating deployment directory ==="
 sudo mkdir -p $DEPLOY_DIR

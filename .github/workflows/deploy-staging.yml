@@ -64,6 +64,14 @@ jobs:
             "$lightsail_host" \
             "${lightsail_port:-22}"
 
+      - name: Install Docker dependencies
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/install-docker-dependencies.sh \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
+
       - name: Transfer environment file
         run: |
           source ${{ github.workspace }}/secrets.env
