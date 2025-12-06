@@ -58,15 +58,24 @@ fi
 echo "=== Installing Docker Compose ==="
 DOCKER_COMPOSE_INSTALLED=false
 
-# Check if Docker Compose is already available
-if docker compose version &> /dev/null 2>&1; then
+# Check if Docker Compose is already available (with verbose output)
+echo "Checking for existing Docker Compose installation..."
+if docker compose version 2>&1 | head -n 1 | grep -q "Docker Compose version"; then
     echo "✓ Docker Compose plugin is already installed"
     docker compose version
     DOCKER_COMPOSE_INSTALLED=true
-elif command -v docker-compose &> /dev/null && docker-compose version &> /dev/null 2>&1; then
-    echo "✓ Standalone docker-compose is already installed"
-    docker-compose version
-    DOCKER_COMPOSE_INSTALLED=true
+elif command -v docker-compose &> /dev/null; then
+    if docker-compose version 2>&1 | head -n 1 | grep -q "docker-compose version\|Docker Compose version"; then
+        echo "✓ Standalone docker-compose is already installed"
+        docker-compose version
+        DOCKER_COMPOSE_INSTALLED=true
+    else
+        echo "docker-compose command exists but version check failed, will reinstall"
+        DOCKER_COMPOSE_INSTALLED=false
+    fi
+else
+    echo "Docker Compose not found"
+    DOCKER_COMPOSE_INSTALLED=false
 fi
 
 # Install Docker Compose if not available (try multiple methods)
@@ -75,9 +84,18 @@ if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
     
     # Method 1: Try to install docker-compose-plugin from apt
     echo "Method 1: Trying apt package manager..."
-    if sudo apt-get install -y docker-compose-plugin 2>/dev/null && docker compose version &> /dev/null 2>&1; then
-        echo "✓ Docker Compose plugin installed via apt"
-        DOCKER_COMPOSE_INSTALLED=true
+    if sudo apt-get install -y docker-compose-plugin; then
+        # Wait a moment for installation to complete
+        sleep 2
+        if docker compose version 2>&1 | head -n 1 | grep -q "Docker Compose version"; then
+            echo "✓ Docker Compose plugin installed via apt"
+            docker compose version
+            DOCKER_COMPOSE_INSTALLED=true
+        else
+            echo "Warning: docker-compose-plugin installed but 'docker compose version' failed"
+        fi
+    else
+        echo "Method 1 failed: docker-compose-plugin not available in apt"
     fi
     
     # Method 2: Try installing from Docker's official repository
@@ -89,9 +107,18 @@ if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
         sudo chmod a+r /etc/apt/keyrings/docker.gpg 2>/dev/null || true
         echo "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \$(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null 2>/dev/null || true
         sudo apt-get update 2>/dev/null || true
-        if sudo apt-get install -y docker-compose-plugin 2>/dev/null && docker compose version &> /dev/null 2>&1; then
-            echo "✓ Docker Compose plugin installed from Docker repository"
-            DOCKER_COMPOSE_INSTALLED=true
+        if sudo apt-get install -y docker-compose-plugin; then
+            # Wait a moment for installation to complete
+            sleep 2
+            if docker compose version 2>&1 | head -n 1 | grep -q "Docker Compose version"; then
+                echo "✓ Docker Compose plugin installed from Docker repository"
+                docker compose version
+                DOCKER_COMPOSE_INSTALLED=true
+            else
+                echo "Warning: docker-compose-plugin installed but 'docker compose version' failed"
+            fi
+        else
+            echo "Method 2 failed: Could not install docker-compose-plugin from Docker repository"
         fi
     fi
     
@@ -115,31 +142,55 @@ if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
         echo "Downloading from: \$DOWNLOAD_URL"
         
         # Download with proper error handling
-        if sudo curl -L -f -o /usr/local/bin/docker-compose "\$DOWNLOAD_URL" 2>/dev/null; then
+        echo "Attempting download..."
+        if sudo curl -L -f -o /usr/local/bin/docker-compose "\$DOWNLOAD_URL"; then
+            echo "Download completed, setting permissions..."
             sudo chmod +x /usr/local/bin/docker-compose
             # Verify the file is a valid binary
-            if [ -s /usr/local/bin/docker-compose ] && (file /usr/local/bin/docker-compose | grep -q "ELF\|executable" || head -c 4 /usr/local/bin/docker-compose | grep -q "ELF"); then
-                if docker-compose version &> /dev/null 2>&1; then
-                    echo "✓ Standalone docker-compose downloaded and verified successfully"
-                    DOCKER_COMPOSE_INSTALLED=true
+            if [ -s /usr/local/bin/docker-compose ]; then
+                if file /usr/local/bin/docker-compose | grep -q "ELF\|executable" || head -c 4 /usr/local/bin/docker-compose | grep -q "ELF"; then
+                    echo "Binary file verified, testing version..."
+                    if docker-compose version 2>&1 | head -n 1 | grep -q "docker-compose version\|Docker Compose version"; then
+                        echo "✓ Standalone docker-compose downloaded and verified successfully"
+                        docker-compose version
+                        DOCKER_COMPOSE_INSTALLED=true
+                    else
+                        echo "Error: Binary downloaded but version check failed"
+                        echo "Attempting to run: docker-compose version"
+                        docker-compose version || true
+                        sudo rm -f /usr/local/bin/docker-compose
+                    fi
                 else
-                    echo "Warning: Binary downloaded but version check failed"
+                    echo "Error: Downloaded file is not a valid binary"
                     sudo rm -f /usr/local/bin/docker-compose
                 fi
             else
-                echo "Error: Downloaded file is not a valid binary"
+                echo "Error: Downloaded file is empty"
                 sudo rm -f /usr/local/bin/docker-compose
             fi
         else
-            echo "Warning: Failed to download docker-compose"
+            echo "Error: Failed to download docker-compose from \$DOWNLOAD_URL"
+            echo "Checking if file was partially downloaded..."
+            if [ -f /usr/local/bin/docker-compose ]; then
+                echo "Removing partial download..."
+                sudo rm -f /usr/local/bin/docker-compose
+            fi
         fi
     fi
     
     # Final verification
     if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
+        echo ""
         echo "Error: All Docker Compose installation methods failed"
-        echo "Please install Docker Compose manually on the server"
+        echo "Attempted methods:"
+        echo "  1. apt-get install docker-compose-plugin"
+        echo "  2. Docker official repository"
+        echo "  3. Standalone binary download"
+        echo ""
+        echo "Please check the error messages above and install Docker Compose manually on the server"
         exit 1
+    else
+        echo "✓ Docker Compose installation verified successfully"
     fi
 fi
 
