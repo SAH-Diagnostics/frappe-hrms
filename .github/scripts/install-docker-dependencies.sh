@@ -60,17 +60,28 @@ DOCKER_COMPOSE_INSTALLED=false
 
 # Check if Docker Compose is already available (with verbose output)
 echo "Checking for existing Docker Compose installation..."
+
+# Check for docker compose plugin first
 if docker compose version 2>&1 | head -n 1 | grep -q "Docker Compose version"; then
     echo "✓ Docker Compose plugin is already installed"
     docker compose version
     DOCKER_COMPOSE_INSTALLED=true
+# Check for standalone docker-compose
 elif command -v docker-compose &> /dev/null; then
-    if docker-compose version 2>&1 | head -n 1 | grep -q "docker-compose version\|Docker Compose version"; then
+    echo "Found docker-compose command, testing version..."
+    if docker-compose version 2>&1 | head -n 1 | grep -qE "(docker-compose version|Docker Compose version)"; then
         echo "✓ Standalone docker-compose is already installed"
         docker-compose version
         DOCKER_COMPOSE_INSTALLED=true
     else
-        echo "docker-compose command exists but version check failed, will reinstall"
+        echo "docker-compose command exists but version check failed"
+        echo "Output of 'docker-compose version':"
+        docker-compose version 2>&1 || true
+        echo "Removing broken docker-compose installation..."
+        # Remove broken docker-compose binary from common locations
+        sudo rm -f /usr/local/bin/docker-compose
+        sudo rm -f /usr/bin/docker-compose
+        sudo rm -f /usr/local/bin/docker-compose-v2
         DOCKER_COMPOSE_INSTALLED=false
     fi
 else
@@ -79,7 +90,7 @@ else
 fi
 
 # Install Docker Compose if not available (try multiple methods)
-if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
+if [ "\$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
     echo "Docker Compose not found, installing..."
     
     # Method 1: Try to install docker-compose-plugin from apt
@@ -87,19 +98,21 @@ if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
     if sudo apt-get install -y docker-compose-plugin; then
         # Wait a moment for installation to complete
         sleep 2
-        if docker compose version 2>&1 | head -n 1 | grep -q "Docker Compose version"; then
+        if docker compose version 2>&1 | head -n 1 | grep -qE "(Docker Compose version|docker compose version)"; then
             echo "✓ Docker Compose plugin installed via apt"
             docker compose version
             DOCKER_COMPOSE_INSTALLED=true
         else
             echo "Warning: docker-compose-plugin installed but 'docker compose version' failed"
+            echo "Output:"
+            docker compose version 2>&1 || true
         fi
     else
         echo "Method 1 failed: docker-compose-plugin not available in apt"
     fi
     
     # Method 2: Try installing from Docker's official repository
-    if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
+    if [ "\$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
         echo "Method 2: Trying Docker's official repository..."
         sudo apt-get install -y ca-certificates curl gnupg lsb-release 2>/dev/null || true
         sudo install -m 0755 -d /etc/apt/keyrings 2>/dev/null || true
@@ -110,12 +123,14 @@ if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
         if sudo apt-get install -y docker-compose-plugin; then
             # Wait a moment for installation to complete
             sleep 2
-            if docker compose version 2>&1 | head -n 1 | grep -q "Docker Compose version"; then
+            if docker compose version 2>&1 | head -n 1 | grep -qE "(Docker Compose version|docker compose version)"; then
                 echo "✓ Docker Compose plugin installed from Docker repository"
                 docker compose version
                 DOCKER_COMPOSE_INSTALLED=true
             else
                 echo "Warning: docker-compose-plugin installed but 'docker compose version' failed"
+                echo "Output:"
+                docker compose version 2>&1 || true
             fi
         else
             echo "Method 2 failed: Could not install docker-compose-plugin from Docker repository"
@@ -123,7 +138,7 @@ if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
     fi
     
     # Method 3: Fallback to standalone docker-compose binary
-    if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
+    if [ "\$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
         echo "Method 3: Downloading standalone docker-compose binary..."
         DOCKER_COMPOSE_VERSION="v2.24.5"
         OS=\$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -150,14 +165,15 @@ if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
             if [ -s /usr/local/bin/docker-compose ]; then
                 if file /usr/local/bin/docker-compose | grep -q "ELF\|executable" || head -c 4 /usr/local/bin/docker-compose | grep -q "ELF"; then
                     echo "Binary file verified, testing version..."
-                    if docker-compose version 2>&1 | head -n 1 | grep -q "docker-compose version\|Docker Compose version"; then
+                    if docker-compose version 2>&1 | head -n 1 | grep -qE "(docker-compose version|Docker Compose version)"; then
                         echo "✓ Standalone docker-compose downloaded and verified successfully"
                         docker-compose version
                         DOCKER_COMPOSE_INSTALLED=true
                     else
                         echo "Error: Binary downloaded but version check failed"
                         echo "Attempting to run: docker-compose version"
-                        docker-compose version || true
+                        docker-compose version 2>&1 || true
+                        echo "Removing failed binary..."
                         sudo rm -f /usr/local/bin/docker-compose
                     fi
                 else
@@ -179,7 +195,7 @@ if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
     fi
     
     # Final verification
-    if [ "$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
+    if [ "\$DOCKER_COMPOSE_INSTALLED" = "false" ]; then
         echo ""
         echo "Error: All Docker Compose installation methods failed"
         echo "Attempted methods:"
