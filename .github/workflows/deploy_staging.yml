@@ -1,0 +1,203 @@
+name: Deploy to AWS Lightsail (Staging)
+
+on:
+  push:
+    branches:
+      - staging
+  workflow_dispatch:
+
+env:
+  DOCKER_COMPOSE_FILE: docker/docker-compose.yml
+  REMOTE_PROJECT_PATH: /opt/frappe-hrms
+
+jobs:
+  deploy:
+    name: Deploy to Lightsail (Staging)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.STAGING_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.STAGING_AWS_SECRETS_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'eu-west-2' }}
+
+      - name: Verify AWS CLI
+        run: |
+          # AWS CLI is pre-installed on GitHub Actions runners
+          # For act-cli, install if needed (cached after first run)
+          if ! command -v aws &> /dev/null; then
+            echo "AWS CLI not found, installing..."
+            curl -sS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip -q awscliv2.zip
+            sudo ./aws/install
+            rm -rf aws awscliv2.zip
+            echo "✓ AWS CLI installed"
+          else
+            echo "✓ AWS CLI already available"
+          fi
+          aws --version
+
+      - name: Retrieve deployment secrets from AWS Secrets Manager
+        id: secrets
+        run: |
+          # Determine the region for the secret (can be different from default region)
+          SECRET_REGION="${{ secrets.AWS_SECRETS_REGION || secrets.AWS_REGION || 'eu-west-2' }}"
+          
+          echo "Fetching secret from region: $SECRET_REGION"
+          
+          # Retrieve the secret value
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "${{ secrets.STAGING_AWS_DEPLOY_SECRET_ID }}" \
+            --region "$SECRET_REGION" \
+            --query SecretString \
+            --output text)
+          
+          # Export for prepare_context.py
+          echo "SECRET_JSON<<EOF" >> $GITHUB_ENV
+          echo "$SECRET_JSON" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prepare deployment context
+        id: prepare
+        run: |
+          python deploy/dev/prepare_context.py
+
+      - name: Setup SSH key and test connection
+        run: |
+          echo "=== SSH Key Setup and Verification ==="
+          
+          # Ensure SSH key has correct permissions
+          chmod 600 ${{ steps.prepare.outputs.ssh_key_path }}
+          echo "✓ SSH key permissions:"
+          ls -la ${{ steps.prepare.outputs.ssh_key_path }}
+          
+          # Verify key format
+          echo ""
+          echo "✓ Verifying SSH key format..."
+          head -1 ${{ steps.prepare.outputs.ssh_key_path }}
+          tail -1 ${{ steps.prepare.outputs.ssh_key_path }}
+          
+          # Check key type
+          echo ""
+          echo "✓ Checking key type..."
+          ssh-keygen -l -f ${{ steps.prepare.outputs.ssh_key_path }} || echo "Warning: Could not determine key type"
+          
+          # Add host to known_hosts
+          echo ""
+          echo "✓ Adding host to known_hosts..."
+          mkdir -p ~/.ssh
+          ssh-keyscan -p ${{ steps.prepare.outputs.port }} -H ${{ steps.prepare.outputs.host }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          
+          # Test SSH connection
+          echo ""
+          echo "✓ Testing SSH connection to ${{ steps.prepare.outputs.host }}..."
+          echo "  User: ${{ steps.prepare.outputs.user }}"
+          echo "  Port: ${{ steps.prepare.outputs.port }}"
+          echo ""
+          
+          if ssh -p ${{ steps.prepare.outputs.port }} \
+            -i ${{ steps.prepare.outputs.ssh_key_path }} \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=30 \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }} "echo 'SSH connection successful!'" 2>&1; then
+            echo ""
+            echo "✅ SSH connection successful!"
+          else
+            echo ""
+            echo "❌ SSH connection failed!"
+            echo ""
+            echo "Troubleshooting steps:"
+            echo "1. Verify the SSH key in AWS Secrets Manager matches your Lightsail key"
+            echo "2. Download your Lightsail key and encode it: cat key.pem | base64 -w 0"
+            echo "3. Update AWS Secrets Manager with the correct base64-encoded key"
+            echo "4. Ensure the public key is in /home/ubuntu/.ssh/authorized_keys on the server"
+            echo ""
+            echo "Run this locally to test your key:"
+            echo "  ssh -i your-key.pem ubuntu@${{ steps.prepare.outputs.host }}"
+            exit 1
+          fi
+      
+      - name: Prepare .env file for deployment
+        run: |
+          # Use the env file materialised by prepare_context.py instead of inlining
+          # a huge GitHub expression (which can exceed the max expression length).
+          if [ -f "${{ steps.prepare.outputs.env_file }}" ]; then
+            cp "${{ steps.prepare.outputs.env_file }}" deploy.env
+          else
+            echo "✗ Env file not found at ${{ steps.prepare.outputs.env_file }}"
+            exit 1
+          fi
+          echo "Environment file created from ${{ steps.prepare.outputs.env_file }}:"
+          cat deploy.env
+      
+      - name: Copy .env file to server
+        run: |
+          scp -P ${{ steps.prepare.outputs.port }} \
+            -i ${{ steps.prepare.outputs.ssh_key_path }} \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            deploy.env \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }}:/tmp/frappe.env
+
+      - name: Upload remote deploy script
+        run: |
+          scp -P ${{ steps.prepare.outputs.port }} \
+            -i ${{ steps.prepare.outputs.ssh_key_path }} \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            deploy/dev/remote_deploy.sh \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }}:/tmp/remote_deploy.sh
+
+      - name: Deploy on Lightsail instance
+        run: |
+          ssh -p ${{ steps.prepare.outputs.port }} \
+            -i ${{ steps.prepare.outputs.ssh_key_path }} \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            ${{ steps.prepare.outputs.user }}@${{ steps.prepare.outputs.host }} \
+            "bash /tmp/remote_deploy.sh '${{ steps.prepare.outputs.user }}' '${{ steps.prepare.outputs.remote_path }}' '${{ steps.prepare.outputs.compose_file }}' '${{ steps.prepare.outputs.host }}'"
+
+      - name: Deployment summary
+        run: |
+          echo "✅ Deployment completed successfully!"
+          echo ""
+          echo "🌐 Application URLs:"
+          echo "   Primary: https://${{ steps.prepare.outputs.host }}"
+          echo "   Fallback: https://www.${{ steps.prepare.outputs.host }}"
+          echo ""
+          echo "📦 Deployed to: ${{ steps.prepare.outputs.remote_path }}"
+          echo ""
+          echo "🔍 Troubleshooting Connection Issues:"
+          echo ""
+          echo "If you see 'ERR_CONNECTION_REFUSED', check:"
+          echo ""
+          echo "1. AWS Lightsail Security Group:"
+          echo "   - Go to AWS Lightsail → Networking → Firewall"
+          echo "   - Ensure ports 80 (HTTP) and 443 (HTTPS) are open"
+          echo "   - Add rules: HTTP (port 80) and HTTPS (port 443) from Anywhere (0.0.0.0/0)"
+          echo ""
+          echo "2. Manual Checks (SSH into server and run):"
+          echo "   sudo systemctl status nginx"
+          echo "   sudo nginx -t"
+          echo "   sudo ss -tlnp | grep -E ':80|:443'"
+          echo "   sudo docker compose -f /opt/frappe-hrms/docker/docker-compose.yml ps"
+          echo "   curl -I http://127.0.0.1:8000"
+          echo ""
+          echo "ℹ️  If HTTPS is not working:"
+          echo "   1. Check certificate status: sudo certbot certificates"
+          echo "   2. Manually renew if needed: sudo certbot renew --nginx"
+          echo "   3. Check nginx logs: sudo tail -f /var/log/nginx/error.log"
+
+

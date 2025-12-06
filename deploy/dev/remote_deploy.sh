@@ -560,4 +560,3 @@ echo "=== Deployment completed successfully ==="
 if [ -n "$DEPLOY_HOST" ]; then
   echo "=== Frappe HRMS should be accessible at http://$DEPLOY_HOST ==="
 fi
-

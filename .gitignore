@@ -20,3 +20,9 @@ hrms/public/frontend
 hrms/www/hrms.html
 hrms/public/roster
 hrms/www/roster.html
+
+# Deployment secrets
+deploy/dev/.env.remote
+.env*
+*.pem
+*.key
