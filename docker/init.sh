@@ -139,9 +139,24 @@ else
     # Remove redis, watch from Procfile
     sed -i '/redis/d' ./Procfile
     sed -i '/watch/d' ./Procfile
+fi
 
+# Ensure apps are installed (even if bench already existed)
+echo "Ensuring required apps are installed..."
+export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
+
+if [ ! -d "apps/erpnext" ]; then
+    echo "Installing erpnext app..."
     bench get-app erpnext
+else
+    echo "✓ erpnext app already exists"
+fi
+
+if [ ! -d "apps/hrms" ]; then
+    echo "Installing hrms app..."
     bench get-app hrms
+else
+    echo "✓ hrms app already exists"
 fi
 
 if site_exists; then
