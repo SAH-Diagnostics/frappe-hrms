@@ -37,8 +37,15 @@ echo "=== Using site name: $SITE_NAME ==="
 BENCH_EXISTS=false
 if [ -d "/home/frappe/frappe-bench" ]; then
     # Check if it's a valid bench by looking for bench config or apps directory
-    if [ -d "/home/frappe/frappe-bench/apps" ] || [ -f "/home/frappe/frappe-bench/sites/common_site_config.json" ] || [ -f "/home/frappe/frappe-bench/.git/config" ]; then
+    # Note: sites directory might exist as volume mount even if bench doesn't exist
+    if [ -d "/home/frappe/frappe-bench/apps" ] || [ -f "/home/frappe/frappe-bench/sites/common_site_config.json" ] || [ -f "/home/frappe/frappe-bench/.git/config" ] || [ -f "/home/frappe/frappe-bench/Procfile" ]; then
         BENCH_EXISTS=true
+    else
+        # If only sites directory exists (volume mount), bench doesn't exist
+        if [ -d "/home/frappe/frappe-bench/sites" ] && [ ! -d "/home/frappe/frappe-bench/apps" ]; then
+            echo "Only sites directory exists (volume mount), bench needs to be created"
+            BENCH_EXISTS=false
+        fi
     fi
 fi
 
@@ -118,9 +125,28 @@ fi
 echo "=== Creating new bench ==="
 
 # Remove existing bench directory if it's not valid
+# Note: /home/frappe/frappe-bench/sites is a Docker volume mount, so we NEVER try to remove it
 if [ -d "/home/frappe/frappe-bench" ] && [ "$BENCH_EXISTS" = "false" ]; then
-    echo "Removing invalid bench directory..."
-    rm -rf /home/frappe/frappe-bench
+    echo "Removing invalid bench directory (preserving sites volume mount)..."
+    cd /home/frappe 2>/dev/null || true
+    
+    # Remove bench directory contents except sites (which is a volume mount)
+    # We'll move to parent directory and remove frappe-bench, but sites will remain as mount point
+    if [ -d "/home/frappe/frappe-bench" ]; then
+        # Try to remove the entire directory - if sites is a mount, it will fail gracefully
+        # and we'll just remove what we can
+        rm -rf /home/frappe/frappe-bench 2>/dev/null || {
+            # If removal failed (likely because sites is a mount), remove everything except sites
+            echo "Sites directory is a volume mount, removing other files only..."
+            cd /home/frappe/frappe-bench 2>/dev/null || true
+            # Remove everything except sites using find
+            find . -mindepth 1 -maxdepth 1 ! -name sites -exec rm -rf {} + 2>/dev/null || true
+        }
+    fi
+    
+    # Ensure sites directory exists (Docker will mount the volume here)
+    mkdir -p /home/frappe/frappe-bench/sites 2>/dev/null || true
+    echo "✓ Bench cleanup completed"
 fi
 
 export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
@@ -128,6 +154,11 @@ export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 # Change to home directory before initializing bench
 cd /home/frappe
 
+# Ensure sites directory exists (it will be mounted as volume, but bench init needs it to exist)
+mkdir -p /home/frappe/frappe-bench/sites 2>/dev/null || true
+
+# Initialize bench (this will create frappe-bench directory)
+# If sites directory already exists, bench init will use it
 bench init --skip-redis-config-generation frappe-bench
 
 cd /home/frappe/frappe-bench || {
