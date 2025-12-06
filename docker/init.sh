@@ -58,25 +58,26 @@ if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
         fi
     fi
     
+    # Ensure we're in the bench directory for all commands
+    cd /home/frappe/frappe-bench
+    pwd
+    echo "Current directory: $(pwd)"
+    
     # Update database configuration if environment variables are set
     if [ ! -z "$DB_HOST_VALUE" ]; then
         echo "Updating database host to: $DB_HOST_VALUE:$DB_PORT_VALUE"
-        bench set-mariadb-host "$DB_HOST_VALUE"
-        bench set-mariadb-port "$DB_PORT_VALUE"
+        bench set-mariadb-host "$DB_HOST_VALUE" || bench set-config db_host "$DB_HOST_VALUE"
+        bench set-config db_port "$DB_PORT_VALUE" 2>/dev/null || true
     else
         echo "Using existing database configuration"
         # Ensure it's set to local mariadb if not already configured
         CURRENT_HOST=$(bench get-config db_host 2>/dev/null || echo "")
         if [ -z "$CURRENT_HOST" ] || [ "$CURRENT_HOST" = "localhost" ]; then
             echo "Setting database host to local mariadb container"
-            bench set-mariadb-host mariadb
-            bench set-mariadb-port 3306
+            bench set-mariadb-host mariadb || bench set-config db_host mariadb
+            bench set-config db_port 3306 2>/dev/null || true
         fi
     fi
-    
-    # Ensure we're in the bench directory for all commands
-    pwd
-    echo "Current directory: $(pwd)"
     
     # Check if site exists before starting
     if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
@@ -111,12 +112,12 @@ chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
 # Configure database connection
 if [ ! -z "$DB_HOST_VALUE" ]; then
     echo "Connecting to external database: $DB_HOST_VALUE:$DB_PORT_VALUE"
-    bench set-mariadb-host "$DB_HOST_VALUE"
-    bench set-mariadb-port "$DB_PORT_VALUE"
+    bench set-mariadb-host "$DB_HOST_VALUE" || bench set-config db_host "$DB_HOST_VALUE"
+    bench set-config db_port "$DB_PORT_VALUE" 2>/dev/null || true
 else
     echo "Using local MariaDB container"
-    bench set-mariadb-host mariadb
-    bench set-mariadb-port 3306
+    bench set-mariadb-host mariadb || bench set-config db_host mariadb
+    bench set-config db_port 3306 2>/dev/null || true
 fi
 
 # Configure Redis
