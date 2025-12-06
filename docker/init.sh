@@ -100,6 +100,54 @@ db_table_count() {
     echo "${count:-0}"
 }
 
+# Helper: thoroughly remove all traces of a site before creating it
+cleanup_site_completely() {
+    local site_name="$1"
+    echo "Performing thorough cleanup of site ${site_name}..."
+    
+    # Remove site directory completely
+    if [ -d "sites/${site_name}" ]; then
+        echo "Removing site directory: sites/${site_name}"
+        rm -rf "sites/${site_name}"
+    fi
+    
+    # Remove from sites.txt more robustly
+    if [ -f "sites/sites.txt" ]; then
+        echo "Removing site from sites.txt registry..."
+        # Remove the site name (exact match, whole line)
+        # Also handle cases with trailing whitespace
+        sed -i "/^[[:space:]]*${site_name}[[:space:]]*$/d" "sites/sites.txt" 2>/dev/null || true
+        # Remove empty lines that might be left behind
+        sed -i '/^[[:space:]]*$/d' "sites/sites.txt" 2>/dev/null || true
+    fi
+    
+    # Clear any cached site information
+    # Remove from .bench cache if it exists
+    if [ -d ".bench" ] && [ -f ".bench/sites/${site_name}" ]; then
+        echo "Removing site from .bench cache..."
+        rm -f ".bench/sites/${site_name}" 2>/dev/null || true
+    fi
+    
+    # Clear any site-specific cache directories
+    if [ -d "sites/.cache" ]; then
+        echo "Clearing site cache..."
+        rm -rf "sites/.cache/${site_name}" 2>/dev/null || true
+    fi
+    
+    # Verify cleanup
+    if [ -d "sites/${site_name}" ]; then
+        echo "Warning: Site directory still exists after cleanup attempt"
+    else
+        echo "✓ Site directory successfully removed"
+    fi
+    
+    if [ -f "sites/sites.txt" ] && grep -q "^[[:space:]]*${site_name}[[:space:]]*$" "sites/sites.txt" 2>/dev/null; then
+        echo "Warning: Site still found in sites.txt after cleanup attempt"
+    else
+        echo "✓ Site successfully removed from registry"
+    fi
+}
+
 # Configure Lightsail / S3-compatible bucket for file storage if env vars are present
 configure_bucket_storage() {
     if [ -n "${BUCKET_NAME:-}" ] && [ -n "${BUCKET_ACCESS_KEY_ID:-}" ] && [ -n "${BUCKET_SECRET_ACCESS_KEY:-}" ]; then
@@ -196,16 +244,8 @@ EOF
 else
     echo "No existing site ${SITE_NAME} found, creating site with appropriate database configuration"
 
-    if [ -d "sites/${SITE_NAME}" ]; then
-        rm -rf "sites/${SITE_NAME}"
-    fi
-    
-    if [ -f "sites/sites.txt" ]; then
-        grep -v "^${SITE_NAME}$" "sites/sites.txt" > "sites/sites.txt.tmp" 2>/dev/null || true
-        if [ -f "sites/sites.txt.tmp" ]; then
-            mv "sites/sites.txt.tmp" "sites/sites.txt"
-        fi
-    fi
+    # Thoroughly clean up any existing site traces
+    cleanup_site_completely "$SITE_NAME"
 
     if [ "$DB_HOST" != "mariadb" ]; then
         mkdir -p sites
@@ -302,13 +342,8 @@ EOF
                 ls -R apps/frappe/frappe/database/ || true
             fi
 
-            if [ -d "sites/${SITE_NAME}" ]; then
-                rm -rf "sites/${SITE_NAME}"
-            fi
-            if [ -f "sites/sites.txt" ]; then
-                grep -v "^${SITE_NAME}$" "sites/sites.txt" > "sites/sites.txt.tmp" 2>/dev/null || true
-                mv "sites/sites.txt.tmp" "sites/sites.txt" 2>/dev/null || true
-            fi
+            # Thoroughly clean up any existing site traces before creating new site
+            cleanup_site_completely "$SITE_NAME"
 
             bench new-site "$SITE_NAME" \
                 --force \
@@ -326,6 +361,8 @@ EOF
         fi
     else
         echo "Creating site with local MariaDB"
+        # Thoroughly clean up any existing site traces before creating new site
+        cleanup_site_completely "$SITE_NAME"
         bench set-mariadb-host mariadb
         bench new-site "$SITE_NAME" \
             --mariadb-root-password "$DB_PASSWORD" \
