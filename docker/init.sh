@@ -97,6 +97,14 @@ if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
 else
     echo "Site $SITE_NAME does not exist, creating new site..."
     
+    # Remove site directory if it exists (from previous failed attempts or volume persistence)
+    # This is necessary because bench new-site will fail if site directory exists, even with --force
+    if [ -d "/home/frappe/frappe-bench/sites/$SITE_NAME" ]; then
+        echo "⚠️  Site directory exists but site is not functional, removing it..."
+        rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME"
+        echo "✓ Site directory removed"
+    fi
+    
     # Verify database connectivity before creating site (optional check)
     if [ ! -z "$DB_HOST_VALUE" ]; then
         echo "Verifying database connectivity..."
