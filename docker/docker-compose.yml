@@ -1,6 +1,5 @@
+version: "3.8" # Updated version
 services:
-  # MariaDB is kept for local development
-  # For production, use external PostgreSQL via environment variables
   mariadb:
     image: mariadb:10.8
     command:
@@ -9,39 +8,46 @@ services:
       - --skip-character-set-client-handshake
       - --skip-innodb-read-only-compressed # Temporary fix for MariaDB 10.6
     environment:
-      MYSQL_ROOT_PASSWORD: 123
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-123}
     volumes:
       - mariadb-data:/var/lib/mysql
-    profiles:
-      - local
 
   redis:
     image: redis:alpine
 
   frappe:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # image: frappe/bench:latest
+    image: frappe/bench:latest
     command: bash /workspace/init.sh
-    env_file:
-      # Populated during deployment; path is relative to this compose file (docker/)
-      - ../deploy/dev/.env.remote
     environment:
       - SHELL=/bin/bash
+      # Database configuration - use external RDS if provided, otherwise local MariaDB
+      - DB_HOST=${DB_HOST:-}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-123}
+      - DB_NAME=${DB_NAME:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      # Support alternative RDS variable names (for compatibility with deployment scripts)
+      - RDS_HOSTNAME=${RDS_HOSTNAME:-${DB_HOST:-}}
+      - RDS_PORT=${RDS_PORT:-${DB_PORT:-3306}}
+      - RDS_USERNAME=${RDS_USERNAME:-${DB_USER:-root}}
+      - RDS_PASSWORD=${RDS_PASSWORD:-${DB_PASSWORD:-123}}
+      - RDS_DB_NAME=${RDS_DB_NAME:-${DB_NAME:-}}
+      # Site name configuration
+      - SITE_NAME=${SITE_NAME:-hrms.localhost}
+      # Safety flag to prevent overwriting existing sites
+      - EXISTING_SITE=${EXISTING_SITE:-false}
     working_dir: /home/frappe
     volumes:
       - .:/workspace
-      # Persist the bench directory so that reruns of the deployment
-      # do not recreate the bench and re-run `bench new-site` against
-      # an existing database.
-      - frappe-home:/home/frappe
+      - frappe-sites-data:/home/frappe/frappe-bench/sites
     ports:
       - 8000:8000
       - 9000:9000
     depends_on:
       - redis
+      - mariadb
 
 volumes:
   mariadb-data:
-  frappe-home:
+  frappe-sites-data:

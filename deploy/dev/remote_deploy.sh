@@ -319,9 +319,8 @@ fi
 
 if [ "$CERT_NEEDED" = true ]; then
   echo "=== Obtaining SSL certificate ==="
-  # Use variables for email if present
-  CERT_EMAIL="admin@sahdiagnostics.com"
-  
+  CERT_EMAIL="${CERTBOT_EMAIL:-admin@sahdiagnostics.com}"
+
   sudo certbot certonly --webroot \
     -w /var/www/certbot \
     -d "$DOMAIN" \
