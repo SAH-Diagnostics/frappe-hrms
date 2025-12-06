@@ -20,20 +20,27 @@ AWS_SECRET_ACCESS_KEY="$2"
 AWS_REGION="$3"
 
 # Validate inputs
+echo "Validating input parameters..."
+
 if [ -z "$AWS_ACCESS_KEY_ID" ]; then
-    echo "Error: AWS_ACCESS_KEY_ID is empty"
+    echo "Error: AWS_ACCESS_KEY_ID (argument 1) is empty or not provided"
+    echo "Hint: Check if the GitHub Secret 'STAGING_AWS_ACCESS_KEY_ID' is set"
     exit 1
 fi
 
 if [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
-    echo "Error: AWS_SECRET_ACCESS_KEY is empty"
+    echo "Error: AWS_SECRET_ACCESS_KEY (argument 2) is empty or not provided"
+    echo "Hint: Check if the GitHub Secret 'STAGING_AWS_SECRET_ACCESS_KEY' is set"
     exit 1
 fi
 
 if [ -z "$AWS_REGION" ]; then
-    echo "Error: AWS_REGION is empty"
+    echo "Error: AWS_REGION (argument 3) is empty or not provided"
+    echo "Hint: Check if the GitHub Secret 'AWS_SECRETS_REGION' is set"
     exit 1
 fi
+
+echo "✓ All input parameters validated"
 
 echo "Setting up AWS CLI..."
 echo "Region: $AWS_REGION"
