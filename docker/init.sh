@@ -57,15 +57,47 @@ if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
 fi
 rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME" 2>/dev/null || true
 
-bench new-site "$SITE_NAME" \
-    --force \
-    ${DB_NAME_VALUE:+--db-name "$DB_NAME_VALUE"} \
-    ${DB_HOST_VALUE:+--db-host "$DB_HOST_VALUE"} \
-    ${DB_PORT_VALUE:+--db-port "$DB_PORT_VALUE"} \
-    --mariadb-root-password "$DB_PASSWORD_VALUE" \
-    --mariadb-root-username "$DB_USER_VALUE" \
-    --admin-password "$ADMIN_PASSWORD_VALUE" \
-    --no-mariadb-socket
+# For external RDS databases, create site manually to avoid CREATE USER privilege issues
+if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
+    echo "Creating site with existing RDS database user..."
+    mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME"
+    
+    # Create site_config.json with RDS credentials
+    cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
+{
+ "db_name": "$DB_NAME_VALUE",
+ "db_password": "$DB_PASSWORD_VALUE",
+ "db_port": $DB_PORT_VALUE,
+ "db_host": "$DB_HOST_VALUE",
+ "db_type": "mariadb",
+ "db_user": "$DB_USER_VALUE",
+ "developer_mode": 1,
+ "webserver_port": "443"
+}
+EOF
+    
+    # Set global config for the site
+    bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
+    bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
+    
+    # Initialize the site database schema
+    # Use install-app frappe to create tables, which doesn't require CREATE USER privilege
+    bench --site "$SITE_NAME" install-app frappe --force || {
+        echo "Warning: install-app frappe failed, trying migrate..."
+        bench --site "$SITE_NAME" migrate || true
+    }
+else
+    # For local MariaDB, use standard new-site command
+    bench new-site "$SITE_NAME" \
+        --force \
+        ${DB_NAME_VALUE:+--db-name "$DB_NAME_VALUE"} \
+        ${DB_HOST_VALUE:+--db-host "$DB_HOST_VALUE"} \
+        ${DB_PORT_VALUE:+--db-port "$DB_PORT_VALUE"} \
+        --mariadb-root-password "$DB_PASSWORD_VALUE" \
+        --mariadb-root-username "$DB_USER_VALUE" \
+        --admin-password "$ADMIN_PASSWORD_VALUE" \
+        --no-mariadb-socket
+fi
 
 # Ensure the site knows its public URL so generated links use the correct host
 if [ -n "$SITE_URL" ]; then
