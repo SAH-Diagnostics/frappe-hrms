@@ -94,9 +94,9 @@ fi
 echo "=== Deploying with Docker Compose ==="
 cd $DEPLOY_DIR
 
-# Use docker compose (plugin)
-sudo docker compose -f $DOCKER_COMPOSE_FILE down || true
-sudo docker compose -f $DOCKER_COMPOSE_FILE up -d --build
+# Use docker compose (plugin) with explicit env file
+sudo docker compose --env-file $DEPLOY_DIR/.env -f $DOCKER_COMPOSE_FILE down || true
+sudo docker compose --env-file $DEPLOY_DIR/.env -f $DOCKER_COMPOSE_FILE up -d --build
 
 echo "=== Verifying containers ==="
 sleep 5
