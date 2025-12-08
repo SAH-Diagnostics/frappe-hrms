@@ -35,6 +35,8 @@ services:
       - RDS_DB_NAME=${RDS_DB_NAME:-${DB_NAME:-}}
       # Site name configuration
       - SITE_NAME=${SITE_NAME:-hrms.localhost}
+      # Public site URL used for absolute links (emails, password reset, etc.)
+      - SITE_URL=${SITE_URL:-}
       # Safety flag to prevent overwriting existing sites
       - EXISTING_SITE=${EXISTING_SITE:-false}
     working_dir: /home/frappe

@@ -67,6 +67,17 @@ bench new-site "$SITE_NAME" \
     --admin-password "$ADMIN_PASSWORD_VALUE" \
     --no-mariadb-socket
 
+# Ensure the site knows its public URL so generated links use the correct host
+if [ -n "$SITE_URL" ]; then
+    HOST_URL="${SITE_URL%/}"
+    # Default to https if no scheme provided
+    if [[ "$HOST_URL" != http*://* ]]; then
+        HOST_URL="https://${HOST_URL}"
+    fi
+    echo "=== Setting host_name to ${HOST_URL} ==="
+    bench --site "$SITE_NAME" set-config host_name "$HOST_URL"
+fi
+
 echo "=== Installing HRMS app ==="
 bench --site "$SITE_NAME" install-app hrms
 bench --site "$SITE_NAME" set-config developer_mode 1
