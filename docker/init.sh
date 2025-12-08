@@ -78,6 +78,11 @@ if [ -n "$SITE_URL" ]; then
     bench --site "$SITE_NAME" set-config host_name "$HOST_URL"
 fi
 
+# Force webserver_port to 443 so generated links do not append :8000
+echo "=== Setting webserver_port to 443 ==="
+bench set-config --global webserver_port 443 || true
+bench --site "$SITE_NAME" set-config webserver_port 443
+
 echo "=== Installing HRMS app ==="
 bench --site "$SITE_NAME" install-app hrms
 bench --site "$SITE_NAME" set-config developer_mode 1
