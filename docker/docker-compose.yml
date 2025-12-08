@@ -40,7 +40,6 @@ services:
     working_dir: /home/frappe
     volumes:
       - .:/workspace
-      - frappe-sites-data:/home/frappe/frappe-bench/sites
     ports:
       - 8000:8000
       - 9000:9000
@@ -50,4 +49,3 @@ services:
 
 volumes:
   mariadb-data:
-  frappe-sites-data:

@@ -14,16 +14,12 @@ echo "=== Recreating bench and site (${SITE_NAME}) ==="
 # Ensure node in PATH for bench
 export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 
-# Always start from a clean bench; no volumes are kept
-rm -rf /home/frappe/frappe-bench 2>/dev/null || true
-
+# Always start from a clean bench inside the container
+BENCH_DIR="/home/frappe/frappe-bench"
 cd /home/frappe
+rm -rf "$BENCH_DIR" 2>/dev/null || true
 bench init --skip-redis-config-generation frappe-bench
-
-cd /home/frappe/frappe-bench || {
-    echo "Error: Bench initialization failed or directory not found"
-    exit 1
-}
+cd "$BENCH_DIR"
 
 # Basic ownership to avoid permission surprises
 chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
