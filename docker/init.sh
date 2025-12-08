@@ -57,13 +57,31 @@ if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
 fi
 rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME" 2>/dev/null || true
 
-# For external RDS databases, create site manually to avoid CREATE USER privilege issues
+# For external RDS databases, try new-site first, fallback to manual creation if CREATE USER fails
 if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
-    echo "Creating site with existing RDS database user..."
-    mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME"
+    echo "Creating site with RDS database..."
     
-    # Create site_config.json with RDS credentials
-    cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
+    # Try bench new-site first (might work if RDS allows it for master user)
+    if bench new-site "$SITE_NAME" \
+        --force \
+        --db-name "$DB_NAME_VALUE" \
+        --db-host "$DB_HOST_VALUE" \
+        --db-port "$DB_PORT_VALUE" \
+        --mariadb-root-password "$DB_PASSWORD_VALUE" \
+        --mariadb-root-username "$DB_USER_VALUE" \
+        --admin-password "$ADMIN_PASSWORD_VALUE" \
+        --no-mariadb-socket 2>&1; then
+        echo "Site created successfully using bench new-site"
+    else
+        echo "bench new-site failed (likely CREATE USER restriction), creating site manually..."
+        
+        # Create site directory structure
+        mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/logs"
+        mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/private"
+        mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
+        
+        # Create site_config.json with RDS credentials
+        cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
 {
  "db_name": "$DB_NAME_VALUE",
  "db_password": "$DB_PASSWORD_VALUE",
@@ -75,17 +93,18 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
  "webserver_port": "443"
 }
 EOF
-    
-    # Set global config for the site
-    bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
-    bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
-    
-    # Initialize the site database schema
-    # Use install-app frappe to create tables, which doesn't require CREATE USER privilege
-    bench --site "$SITE_NAME" install-app frappe --force || {
-        echo "Warning: install-app frappe failed, trying migrate..."
-        bench --site "$SITE_NAME" migrate || true
-    }
+        
+        # Set global config
+        bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
+        bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
+        
+        # Initialize database schema using install-app frappe
+        echo "Initializing database schema..."
+        bench --site "$SITE_NAME" install-app frappe --force || {
+            echo "Warning: install-app frappe failed, trying migrate..."
+            bench --site "$SITE_NAME" migrate || true
+        }
+    fi
 else
     # For local MariaDB, use standard new-site command
     bench new-site "$SITE_NAME" \
