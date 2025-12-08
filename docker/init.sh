@@ -91,7 +91,6 @@ if [ "$BENCH_EXISTS" = "true" ]; then
         # Update database configuration if environment variables are set
         if [ ! -z "$DB_HOST_VALUE" ]; then
             echo "Updating database host to: $DB_HOST_VALUE:$DB_PORT_VALUE"
-            (cd /home/frappe/frappe-bench && bench set-mariadb-host "$DB_HOST_VALUE" 2>/dev/null) || \
             (cd /home/frappe/frappe-bench && bench set-config db_host "$DB_HOST_VALUE" 2>/dev/null) || true
             (cd /home/frappe/frappe-bench && bench set-config db_port "$DB_PORT_VALUE" 2>/dev/null) || true
         else
@@ -100,7 +99,6 @@ if [ "$BENCH_EXISTS" = "true" ]; then
             CURRENT_HOST=$(cd /home/frappe/frappe-bench && bench get-config db_host 2>/dev/null || echo "")
             if [ -z "$CURRENT_HOST" ] || [ "$CURRENT_HOST" = "localhost" ]; then
                 echo "Setting database host to local mariadb container"
-                (cd /home/frappe/frappe-bench && bench set-mariadb-host mariadb 2>/dev/null) || \
                 (cd /home/frappe/frappe-bench && bench set-config db_host mariadb 2>/dev/null) || true
                 (cd /home/frappe/frappe-bench && bench set-config db_port 3306 2>/dev/null) || true
             fi
@@ -182,20 +180,18 @@ echo "Current directory: $(pwd)"
 # Configure database connection
 if [ ! -z "$DB_HOST_VALUE" ]; then
     echo "Connecting to external database: $DB_HOST_VALUE:$DB_PORT_VALUE"
-    (cd /home/frappe/frappe-bench && bench set-mariadb-host "$DB_HOST_VALUE" 2>/dev/null) || \
     (cd /home/frappe/frappe-bench && bench set-config db_host "$DB_HOST_VALUE" 2>/dev/null) || true
     (cd /home/frappe/frappe-bench && bench set-config db_port "$DB_PORT_VALUE" 2>/dev/null) || true
 else
     echo "Using local MariaDB container"
-    (cd /home/frappe/frappe-bench && bench set-mariadb-host mariadb 2>/dev/null) || \
     (cd /home/frappe/frappe-bench && bench set-config db_host mariadb 2>/dev/null) || true
     (cd /home/frappe/frappe-bench && bench set-config db_port 3306 2>/dev/null) || true
 fi
 
-# Configure Redis
-(cd /home/frappe/frappe-bench && bench set-redis-cache-host redis://redis:6379) || true
-(cd /home/frappe/frappe-bench && bench set-redis-queue-host redis://redis:6379) || true
-(cd /home/frappe/frappe-bench && bench set-redis-socketio-host redis://redis:6379) || true
+# Configure Redis using set-config (bench cheatsheet commands)
+(cd /home/frappe/frappe-bench && bench set-config redis_cache redis://redis:6379) || true
+(cd /home/frappe/frappe-bench && bench set-config redis_queue redis://redis:6379) || true
+(cd /home/frappe/frappe-bench && bench set-config redis_socketio redis://redis:6379) || true
 
 # Remove redis, watch from Procfile
 sed -i '/redis/d' ./Procfile 2>/dev/null || true
