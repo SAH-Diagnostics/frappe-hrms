@@ -1,215 +1,146 @@
 #!/bin/bash
 
-set -e  # Exit on error
+set -e
 
-# Determine database connection details
-# Prefer DB_* variables, fall back to RDS_* for compatibility
 DB_HOST_VALUE="${DB_HOST:-${RDS_HOSTNAME:-}}"
 DB_PORT_VALUE="${DB_PORT:-${RDS_PORT:-3306}}"
 DB_USER_VALUE="${DB_USER:-${RDS_USERNAME:-root}}"
 DB_PASSWORD_VALUE="${DB_PASSWORD:-${RDS_PASSWORD:-123}}"
+DB_NAME_VALUE="${DB_NAME:-${RDS_DB_NAME:-}}"
 ADMIN_PASSWORD_VALUE="${ADMIN_PASSWORD:-admin}"
 SITE_NAME="${SITE_NAME:-hrms.localhost}"
 
-echo "=== Using site name: $SITE_NAME ==="
+echo "=== Recreating bench and site (${SITE_NAME}) ==="
 
-# Helper function to update site_config.json
-update_site_config() {
-    local config_file="$1"
-    local key="$2"
-    local value="$3"
-    
-    if [ ! -f "$config_file" ]; then
-        return 1
-    fi
-    
-    python3 -c "
-import json
-import sys
-try:
-    with open('$config_file', 'r') as f:
-        config = json.load(f)
-    config['$key'] = '$value'
-    with open('$config_file', 'w') as f:
-        json.dump(config, f, indent=1)
-except Exception as e:
-    print(f'Error updating $key: {e}', file=sys.stderr)
-    sys.exit(1)
-" 2>/dev/null
-}
-
-# Check if bench already exists
-if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
-    echo "=== Bench already exists ==="
-    cd frappe-bench
-    
-    # Update database configuration if environment variables are set
-    if [ ! -z "$DB_HOST_VALUE" ]; then
-        echo "Updating database host to: $DB_HOST_VALUE:$DB_PORT_VALUE"
-        bench set-mariadb-host "$DB_HOST_VALUE"
-        bench set-mariadb-port "$DB_PORT_VALUE"
-        
-        # Update database credentials in site_config.json directly
-        # This is necessary because bench commands may fail with old credentials
-        SITE_CONFIG="/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json"
-        if [ -f "$SITE_CONFIG" ]; then
-            echo "Updating database credentials in site configuration..."
-            
-            # Update db_name if provided
-            if [ ! -z "$DB_NAME" ]; then
-                echo "  Updating db_name to: $DB_NAME"
-                update_site_config "$SITE_CONFIG" "db_name" "$DB_NAME" || echo "    ⚠️  Could not update db_name"
-            fi
-            
-            # Update db_user if provided (and not default)
-            if [ ! -z "$DB_USER_VALUE" ] && [ "$DB_USER_VALUE" != "root" ]; then
-                echo "  Updating db_user to: $DB_USER_VALUE"
-                update_site_config "$SITE_CONFIG" "db_user" "$DB_USER_VALUE" || echo "    ⚠️  Could not update db_user"
-            fi
-            
-            # Update db_password if provided (and not default)
-            if [ ! -z "$DB_PASSWORD_VALUE" ] && [ "$DB_PASSWORD_VALUE" != "123" ]; then
-                echo "  Updating db_password"
-                update_site_config "$SITE_CONFIG" "db_password" "$DB_PASSWORD_VALUE" || echo "    ⚠️  Could not update db_password"
-            fi
-        else
-            echo "⚠️  Site config file not found at $SITE_CONFIG"
-        fi
-    else
-        echo "Using existing database configuration"
-        # Ensure it's set to local mariadb if not already configured
-        CURRENT_HOST=$(bench get-config db_host 2>/dev/null || echo "")
-        if [ -z "$CURRENT_HOST" ] || [ "$CURRENT_HOST" = "localhost" ]; then
-            echo "Setting database host to local mariadb container"
-            bench set-mariadb-host mariadb
-            bench set-mariadb-port 3306
-        fi
-    fi
-    
-    # Check if site exists before starting
-    if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
-        echo "✓ Site $SITE_NAME exists, starting bench..."
-        bench start
-    else
-        echo "⚠️  Site $SITE_NAME does not exist in database"
-        echo "   Bench exists but site is missing. Please create the site manually or"
-        echo "   remove the bench directory to reinitialize."
-        exit 1
-    fi
-    exit 0
-fi
-
-# Fresh installation path
-echo "=== Creating new bench ==="
-
+# Ensure node in PATH for bench
 export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 
+# Always start from a clean bench inside the container
+BENCH_DIR="/home/frappe/frappe-bench"
+cd /home/frappe
+rm -rf "$BENCH_DIR" 2>/dev/null || true
 bench init --skip-redis-config-generation frappe-bench
+cd "$BENCH_DIR"
 
-cd frappe-bench
+# Basic ownership to avoid permission surprises
+chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
+chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
 
-# Configure database connection
-if [ ! -z "$DB_HOST_VALUE" ]; then
-    echo "Connecting to external database: $DB_HOST_VALUE:$DB_PORT_VALUE"
-    bench set-mariadb-host "$DB_HOST_VALUE"
-    bench set-mariadb-port "$DB_PORT_VALUE"
+# Database configuration (write to common_site_config before site exists)
+if [ -n "$DB_HOST_VALUE" ]; then
+    echo "Configuring external database: $DB_HOST_VALUE:$DB_PORT_VALUE"
+    bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
+    bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
 else
-    echo "Using local MariaDB container"
-    bench set-mariadb-host mariadb
-    bench set-mariadb-port 3306
+    echo "Configuring local MariaDB container"
+    bench set-config --global db_host mariadb 2>/dev/null || true
+    bench set-config --global db_port 3306 2>/dev/null || true
 fi
 
-# Configure Redis
-bench set-redis-cache-host redis://redis:6379
-bench set-redis-queue-host redis://redis:6379
-bench set-redis-socketio-host redis://redis:6379
+# Redis endpoints (global scope)
+bench set-config --global redis_cache redis://redis:6379 || true
+bench set-config --global redis_queue redis://redis:6379 || true
+bench set-config --global redis_socketio redis://redis:6379 || true
 
-# Remove redis, watch from Procfile
+# Remove unused processes
 sed -i '/redis/d' ./Procfile 2>/dev/null || true
 sed -i '/watch/d' ./Procfile 2>/dev/null || true
 
-# Get apps
 echo "=== Getting apps ==="
-bench get-app erpnext
-bench get-app hrms
+bench get-app erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
+bench get-app hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
-# Remove site directory if it exists (from previous failed attempts or volume persistence)
-# This MUST be done before attempting to create site, as bench checks directory first
-echo "=== Checking for existing site directory ==="
-if [ -d "/home/frappe/frappe-bench/sites/$SITE_NAME" ]; then
-    echo "⚠️  Site directory exists, removing it to allow fresh site creation..."
-    rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME"
-    echo "✓ Site directory removed"
+echo "=== Recreating site: $SITE_NAME ==="
+# Drop existing site if present, then remove its files
+if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
+    bench drop-site "$SITE_NAME" --force --no-backup || true
 fi
+rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME" 2>/dev/null || true
 
-# Check if site already exists in database (only if EXISTING_SITE is true)
-if [ "$EXISTING_SITE" = "true" ]; then
-    echo "=== EXISTING_SITE=true: Checking if site exists in database ==="
-    # Create a minimal site directory structure to check database
-    mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME"
-    if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
-        echo "✓ Site $SITE_NAME exists in database, using existing site"
-    else
-        echo "⚠️  EXISTING_SITE=true but site does not exist in database"
-        echo "  Creating new site instead..."
-        rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME"
-        EXISTING_SITE="false"
-    fi
-fi
-
-# Create new site if needed
-if [ "$EXISTING_SITE" != "true" ]; then
-    echo "=== Creating new site: $SITE_NAME ==="
+# For external RDS databases, try new-site first, fallback to manual creation if CREATE USER fails
+if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
+    echo "Creating site with RDS database..."
     
-    # Ensure site directory doesn't exist (double-check)
-    if [ -d "/home/frappe/frappe-bench/sites/$SITE_NAME" ]; then
-        echo "⚠️  Removing stale site directory..."
-        rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME"
-        echo "✓ Site directory removed"
-    fi
-    
-    # Verify database connectivity before creating site (optional check)
-    if [ ! -z "$DB_HOST_VALUE" ]; then
-        echo "Verifying database connectivity..."
-        # Test external database connection if mysql client is available
-        if command -v mysql >/dev/null 2>&1; then
-            if ! mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" -e "SELECT 1;" >/dev/null 2>&1; then
-                echo "✗ Error: Cannot connect to database at $DB_HOST_VALUE:$DB_PORT_VALUE"
-                echo "  Please verify database credentials and network connectivity"
-                exit 1
-            fi
-            echo "✓ Database connection verified"
-        else
-            echo "  (mysql client not available, connection will be verified during site creation)"
-        fi
-    fi
-    
-    # Create site with force flag to overwrite any remaining traces
-    bench new-site "$SITE_NAME" \
-    --force \
-    --mariadb-root-password "$DB_PASSWORD_VALUE" \
-    --mariadb-root-username "$DB_USER_VALUE" \
-    --admin-password "$ADMIN_PASSWORD_VALUE" \
-    --no-mariadb-socket || {
-        echo "✗ Error: Failed to create site. Attempting to remove site directory and retry..."
-        rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME"
-        bench new-site "$SITE_NAME" \
+    # Try bench new-site first (might work if RDS allows it for master user)
+    if bench new-site "$SITE_NAME" \
         --force \
+        --db-name "$DB_NAME_VALUE" \
+        --db-host "$DB_HOST_VALUE" \
+        --db-port "$DB_PORT_VALUE" \
+        --mariadb-root-password "$DB_PASSWORD_VALUE" \
+        --mariadb-root-username "$DB_USER_VALUE" \
+        --admin-password "$ADMIN_PASSWORD_VALUE" \
+        --no-mariadb-socket 2>&1; then
+        echo "Site created successfully using bench new-site"
+    else
+        echo "bench new-site failed (likely CREATE USER restriction), creating site manually..."
+        
+        # Create site directory structure
+        mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/logs"
+        mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/private"
+        mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
+        
+        # Create site_config.json with RDS credentials
+        cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
+{
+ "db_name": "$DB_NAME_VALUE",
+ "db_password": "$DB_PASSWORD_VALUE",
+ "db_port": $DB_PORT_VALUE,
+ "db_host": "$DB_HOST_VALUE",
+ "db_type": "mariadb",
+ "db_user": "$DB_USER_VALUE",
+ "developer_mode": 1,
+ "webserver_port": "443"
+}
+EOF
+        
+        # Set global config
+        bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
+        bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
+        
+        # Initialize database schema using install-app frappe
+        echo "Initializing database schema..."
+        bench --site "$SITE_NAME" install-app frappe --force || {
+            echo "Warning: install-app frappe failed, trying migrate..."
+            bench --site "$SITE_NAME" migrate || true
+        }
+    fi
+else
+    # For local MariaDB, use standard new-site command
+    bench new-site "$SITE_NAME" \
+        --force \
+        ${DB_NAME_VALUE:+--db-name "$DB_NAME_VALUE"} \
+        ${DB_HOST_VALUE:+--db-host "$DB_HOST_VALUE"} \
+        ${DB_PORT_VALUE:+--db-port "$DB_PORT_VALUE"} \
         --mariadb-root-password "$DB_PASSWORD_VALUE" \
         --mariadb-root-username "$DB_USER_VALUE" \
         --admin-password "$ADMIN_PASSWORD_VALUE" \
         --no-mariadb-socket
-    }
-    
-    echo "=== Installing HRMS app ==="
-    bench --site "$SITE_NAME" install-app hrms
-    bench --site "$SITE_NAME" set-config developer_mode 1
-    bench --site "$SITE_NAME" enable-scheduler
 fi
 
-# Final configuration
-bench --site "$SITE_NAME" clear-cache
-bench use "$SITE_NAME"
+# Ensure the site knows its public URL so generated links use the correct host
+if [ -n "$SITE_URL" ]; then
+    HOST_URL="${SITE_URL%/}"
+    # Default to https if no scheme provided
+    if [[ "$HOST_URL" != http*://* ]]; then
+        HOST_URL="https://${HOST_URL}"
+    fi
+    echo "=== Setting host_name to ${HOST_URL} ==="
+    bench --site "$SITE_NAME" set-config host_name "$HOST_URL"
+fi
+
+# Force webserver_port to 443 so generated links do not append :8000
+echo "=== Setting webserver_port to 443 ==="
+bench set-config --global webserver_port 443 || true
+bench --site "$SITE_NAME" set-config webserver_port 443
+
+echo "=== Installing HRMS app ==="
+bench --site "$SITE_NAME" install-app hrms
+bench --site "$SITE_NAME" set-config developer_mode 1
+bench --site "$SITE_NAME" enable-scheduler
+
+bench --site "$SITE_NAME" clear-cache || true
+bench use "$SITE_NAME" || true
 
 echo "=== Starting bench ==="
 bench start
