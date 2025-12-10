@@ -64,9 +64,11 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
     # Try bench new-site first (might work if RDS allows it for master user)
     if bench new-site "$SITE_NAME" \
         --force \
-        --db-name "$DB_NAME_VALUE" \
         --db-host "$DB_HOST_VALUE" \
         --db-port "$DB_PORT_VALUE" \
+        --db-user "$DB_USER_VALUE" \
+        --db-password "$DB_PASSWORD_VALUE" \
+        --db-name "$DB_NAME_VALUE" \
         --mariadb-root-password "$DB_PASSWORD_VALUE" \
         --mariadb-root-username "$DB_USER_VALUE" \
         --admin-password "$ADMIN_PASSWORD_VALUE" \
@@ -80,6 +82,10 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
         mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/private"
         mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
         
+        # Ensure target database exists (idempotent; requires privileges on RDS user)
+        mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+            -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || true
+
         # Create site_config.json with RDS credentials
         cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
 {
