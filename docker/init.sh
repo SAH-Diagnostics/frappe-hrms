@@ -69,9 +69,11 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
         --db-user "$DB_USER_VALUE" \
         --db-password "$DB_PASSWORD_VALUE" \
         --db-name "$DB_NAME_VALUE" \
-        --mariadb-root-password "$DB_PASSWORD_VALUE" \
-        --mariadb-root-username "$DB_USER_VALUE" \
+        --db-type "mariadb" \
+        --db-root-password "$DB_PASSWORD_VALUE" \
+        --db-root-username "$DB_USER_VALUE" \
         --admin-password "$ADMIN_PASSWORD_VALUE" \
+        --verbose \
         --no-mariadb-socket 2>&1; then
         echo "Site created successfully using bench new-site"
     else
