@@ -14,21 +14,50 @@ echo "=== Installing AWS CLI ==="
 # Install aws-cli if not already installed
 if ! command -v aws &> /dev/null; then
     echo "Installing AWS CLI..."
-    apt-get update -qq || true
-    apt-get install -y -qq unzip curl || true
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip" || \
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "/tmp/awscliv2.zip" || true
-    if [ -f "/tmp/awscliv2.zip" ]; then
-        unzip -q /tmp/awscliv2.zip -d /tmp || true
-        /tmp/aws/install || true
-        rm -rf /tmp/aws /tmp/awscliv2.zip || true
+    
+    # Update package list and install dependencies
+    apt-get update -qq
+    apt-get install -y -qq unzip curl
+    
+    # Detect architecture
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "x86_64" ]; then
+        AWS_CLI_URL="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+        AWS_CLI_URL="https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip"
     else
-        # Fallback to pip install if curl fails
-        pip install awscli || true
+        echo "Unsupported architecture: $ARCH. Using pip install."
+        pip install awscli
     fi
-    echo "AWS CLI installation completed"
+    
+    # Download and install AWS CLI
+    if [ -n "$AWS_CLI_URL" ]; then
+        echo "Downloading AWS CLI for $ARCH..."
+        if curl -f "$AWS_CLI_URL" -o "/tmp/awscliv2.zip" 2>/dev/null; then
+            echo "Extracting and installing AWS CLI..."
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            /tmp/aws/install
+            rm -rf /tmp/aws /tmp/awscliv2.zip
+        else
+            echo "Failed to download AWS CLI. Using pip install as fallback..."
+            pip install awscli
+        fi
+    fi
+    
+    # Verify installation
+    if command -v aws &> /dev/null; then
+        echo "✓ AWS CLI installed successfully: $(aws --version)"
+    else
+        echo "✗ AWS CLI installation failed. Trying pip install..."
+        pip install awscli
+        if command -v aws &> /dev/null; then
+            echo "✓ AWS CLI installed via pip: $(aws --version)"
+        else
+            echo "✗ Warning: AWS CLI installation failed. Backup scripts may not work."
+        fi
+    fi
 else
-    echo "AWS CLI already installed"
+    echo "✓ AWS CLI already installed: $(aws --version)"
 fi
 
 echo "=== Recreating bench and site (${SITE_NAME}) ==="
