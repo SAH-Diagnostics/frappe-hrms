@@ -39,6 +39,13 @@ services:
       - SITE_URL=${SITE_URL:-}
       # Safety flag to prevent overwriting existing sites
       - EXISTING_SITE=${EXISTING_SITE:-false}
+      # S3 backup configuration
+      - BUCKET_NAME=${BUCKET_NAME:-}
+      - BUCKET_ACCESS_KEY_ID=${BUCKET_ACCESS_KEY_ID:-}
+      - BUCKET_SECRET_ACCESS_KEY=${BUCKET_SECRET_ACCESS_KEY:-}
+      - BUCKET_REGION=${BUCKET_REGION:-eu-west-2}
+      - BUCKET_ENDPOINT=${BUCKET_ENDPOINT:-}
+      - FILES_BACK_UP_HOURS=${FILES_BACK_UP_HOURS:-}
     working_dir: /home/frappe
     volumes:
       - .:/workspace

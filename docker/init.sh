@@ -10,6 +10,27 @@ DB_NAME_VALUE="${DB_NAME:-${RDS_DB_NAME:-}}"
 ADMIN_PASSWORD_VALUE="${ADMIN_PASSWORD:-admin}"
 SITE_NAME="${SITE_NAME:-hrms.localhost}"
 
+echo "=== Installing AWS CLI ==="
+# Install aws-cli if not already installed
+if ! command -v aws &> /dev/null; then
+    echo "Installing AWS CLI..."
+    apt-get update -qq || true
+    apt-get install -y -qq unzip curl || true
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip" || \
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "/tmp/awscliv2.zip" || true
+    if [ -f "/tmp/awscliv2.zip" ]; then
+        unzip -q /tmp/awscliv2.zip -d /tmp || true
+        /tmp/aws/install || true
+        rm -rf /tmp/aws /tmp/awscliv2.zip || true
+    else
+        # Fallback to pip install if curl fails
+        pip install awscli || true
+    fi
+    echo "AWS CLI installation completed"
+else
+    echo "AWS CLI already installed"
+fi
+
 echo "=== Recreating bench and site (${SITE_NAME}) ==="
 
 # Ensure node in PATH for bench
@@ -149,6 +170,219 @@ bench --site "$SITE_NAME" enable-scheduler
 
 bench --site "$SITE_NAME" clear-cache || true
 bench use "$SITE_NAME" || true
+
+echo "=== Creating S3 backup scripts ==="
+# Create push-to-bucket.sh script
+cat > /home/frappe/push-to-bucket.sh << 'PUSH_SCRIPT_EOF'
+#!/bin/bash
+set -e
+
+# Load environment variables from file if available
+if [ -f /home/frappe/s3-backup-env.sh ]; then
+    source /home/frappe/s3-backup-env.sh
+fi
+
+# Load environment variables (with defaults)
+SITE_NAME="${SITE_NAME:-dev-erp.sahdiagnostics.com}"
+BUCKET_NAME="${BUCKET_NAME:-}"
+BUCKET_ACCESS_KEY_ID="${BUCKET_ACCESS_KEY_ID:-}"
+BUCKET_SECRET_ACCESS_KEY="${BUCKET_SECRET_ACCESS_KEY:-}"
+BUCKET_REGION="${BUCKET_REGION:-eu-west-2}"
+BUCKET_ENDPOINT="${BUCKET_ENDPOINT:-}"
+
+if [ -z "$BUCKET_NAME" ] || [ -z "$BUCKET_ACCESS_KEY_ID" ] || [ -z "$BUCKET_SECRET_ACCESS_KEY" ]; then
+    echo "Error: S3 bucket configuration is missing. Required: BUCKET_NAME, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY"
+    exit 1
+fi
+
+# Configure AWS CLI
+export AWS_ACCESS_KEY_ID="$BUCKET_ACCESS_KEY_ID"
+export AWS_SECRET_ACCESS_KEY="$BUCKET_SECRET_ACCESS_KEY"
+export AWS_DEFAULT_REGION="$BUCKET_REGION"
+
+# Base paths
+SITE_DIR="/home/frappe/frappe-bench/sites/$SITE_NAME"
+PRIVATE_DIR="$SITE_DIR/private"
+PUBLIC_DIR="$SITE_DIR/public"
+LOGS_DIR="$SITE_DIR/logs"
+
+echo "=== Starting backup to S3 at $(date) ==="
+echo "Site: $SITE_NAME"
+echo "Bucket: $BUCKET_NAME"
+
+# Sync private directory
+if [ -d "$PRIVATE_DIR" ]; then
+    echo "Backing up private directory..."
+    if [ -n "$BUCKET_ENDPOINT" ]; then
+        aws s3 sync "$PRIVATE_DIR" "s3://$BUCKET_NAME/private" --endpoint-url="$BUCKET_ENDPOINT" --no-progress || echo "Warning: Failed to sync private directory"
+    else
+        aws s3 sync "$PRIVATE_DIR" "s3://$BUCKET_NAME/private" --no-progress || echo "Warning: Failed to sync private directory"
+    fi
+else
+    echo "Warning: Private directory not found: $PRIVATE_DIR"
+fi
+
+# Sync public directory
+if [ -d "$PUBLIC_DIR" ]; then
+    echo "Backing up public directory..."
+    if [ -n "$BUCKET_ENDPOINT" ]; then
+        aws s3 sync "$PUBLIC_DIR" "s3://$BUCKET_NAME/public" --endpoint-url="$BUCKET_ENDPOINT" --no-progress || echo "Warning: Failed to sync public directory"
+    else
+        aws s3 sync "$PUBLIC_DIR" "s3://$BUCKET_NAME/public" --no-progress || echo "Warning: Failed to sync public directory"
+    fi
+else
+    echo "Warning: Public directory not found: $PUBLIC_DIR"
+fi
+
+# Sync logs directory
+if [ -d "$LOGS_DIR" ]; then
+    echo "Backing up logs directory..."
+    if [ -n "$BUCKET_ENDPOINT" ]; then
+        aws s3 sync "$LOGS_DIR" "s3://$BUCKET_NAME/logs" --endpoint-url="$BUCKET_ENDPOINT" --no-progress || echo "Warning: Failed to sync logs directory"
+    else
+        aws s3 sync "$LOGS_DIR" "s3://$BUCKET_NAME/logs" --no-progress || echo "Warning: Failed to sync logs directory"
+    fi
+else
+    echo "Warning: Logs directory not found: $LOGS_DIR"
+fi
+
+echo "=== Backup completed at $(date) ==="
+PUSH_SCRIPT_EOF
+
+chmod +x /home/frappe/push-to-bucket.sh
+chown frappe:frappe /home/frappe/push-to-bucket.sh
+
+# Create fetch-from-bucket.sh script
+cat > /home/frappe/fetch-from-bucket.sh << 'FETCH_SCRIPT_EOF'
+#!/bin/bash
+set -e
+
+# Load environment variables from file if available
+if [ -f /home/frappe/s3-backup-env.sh ]; then
+    source /home/frappe/s3-backup-env.sh
+fi
+
+# Load environment variables (with defaults)
+SITE_NAME="${SITE_NAME:-dev-erp.sahdiagnostics.com}"
+BUCKET_NAME="${BUCKET_NAME:-}"
+BUCKET_ACCESS_KEY_ID="${BUCKET_ACCESS_KEY_ID:-}"
+BUCKET_SECRET_ACCESS_KEY="${BUCKET_SECRET_ACCESS_KEY:-}"
+BUCKET_REGION="${BUCKET_REGION:-eu-west-2}"
+BUCKET_ENDPOINT="${BUCKET_ENDPOINT:-}"
+
+if [ -z "$BUCKET_NAME" ] || [ -z "$BUCKET_ACCESS_KEY_ID" ] || [ -z "$BUCKET_SECRET_ACCESS_KEY" ]; then
+    echo "Warning: S3 bucket configuration is missing. Skipping fetch from bucket."
+    exit 0
+fi
+
+# Configure AWS CLI
+export AWS_ACCESS_KEY_ID="$BUCKET_ACCESS_KEY_ID"
+export AWS_SECRET_ACCESS_KEY="$BUCKET_SECRET_ACCESS_KEY"
+export AWS_DEFAULT_REGION="$BUCKET_REGION"
+
+# Base paths
+SITE_DIR="/home/frappe/frappe-bench/sites/$SITE_NAME"
+PRIVATE_DIR="$SITE_DIR/private"
+PUBLIC_DIR="$SITE_DIR/public"
+LOGS_DIR="$SITE_DIR/logs"
+
+echo "=== Fetching data from S3 at $(date) ==="
+echo "Site: $SITE_NAME"
+echo "Bucket: $BUCKET_NAME"
+
+# Ensure directories exist
+mkdir -p "$PRIVATE_DIR" "$PUBLIC_DIR" "$LOGS_DIR"
+chown -R frappe:frappe "$SITE_DIR" 2>/dev/null || true
+
+# Check if bucket has data and fetch
+check_and_sync() {
+    local local_dir="$1"
+    local s3_path="$2"
+    local dir_name="$3"
+    
+    echo "Checking $dir_name directory in bucket..."
+    if [ -n "$BUCKET_ENDPOINT" ]; then
+        if aws s3 ls "s3://$BUCKET_NAME/$s3_path" --endpoint-url="$BUCKET_ENDPOINT" &>/dev/null; then
+            echo "Found $dir_name data in bucket, syncing..."
+            aws s3 sync "s3://$BUCKET_NAME/$s3_path" "$local_dir" --endpoint-url="$BUCKET_ENDPOINT" --no-progress || echo "Warning: Failed to sync $dir_name directory"
+        else
+            echo "No $dir_name data found in bucket, skipping..."
+        fi
+    else
+        if aws s3 ls "s3://$BUCKET_NAME/$s3_path" &>/dev/null; then
+            echo "Found $dir_name data in bucket, syncing..."
+            aws s3 sync "s3://$BUCKET_NAME/$s3_path" "$local_dir" --no-progress || echo "Warning: Failed to sync $dir_name directory"
+        else
+            echo "No $dir_name data found in bucket, skipping..."
+        fi
+    fi
+    
+    # Fix permissions
+    chown -R frappe:frappe "$local_dir" 2>/dev/null || true
+}
+
+# Fetch each directory
+check_and_sync "$PRIVATE_DIR" "private" "private"
+check_and_sync "$PUBLIC_DIR" "public" "public"
+check_and_sync "$LOGS_DIR" "logs" "logs"
+
+echo "=== Fetch from bucket completed at $(date) ==="
+FETCH_SCRIPT_EOF
+
+chmod +x /home/frappe/fetch-from-bucket.sh
+chown frappe:frappe /home/frappe/fetch-from-bucket.sh
+
+echo "=== Creating S3 backup environment file ==="
+# Export environment variables to a file that can be sourced by scripts and cron
+cat > /home/frappe/s3-backup-env.sh << EOF
+export SITE_NAME="${SITE_NAME:-dev-erp.sahdiagnostics.com}"
+export BUCKET_NAME="${BUCKET_NAME:-}"
+export BUCKET_ACCESS_KEY_ID="${BUCKET_ACCESS_KEY_ID:-}"
+export BUCKET_SECRET_ACCESS_KEY="${BUCKET_SECRET_ACCESS_KEY:-}"
+export BUCKET_REGION="${BUCKET_REGION:-eu-west-2}"
+export BUCKET_ENDPOINT="${BUCKET_ENDPOINT:-}"
+EOF
+chmod 600 /home/frappe/s3-backup-env.sh
+chown frappe:frappe /home/frappe/s3-backup-env.sh
+
+echo "=== Setting up cron job for S3 backup ==="
+# Set up cron job if FILES_BACK_UP_HOURS is set
+FILES_BACK_UP_HOURS="${FILES_BACK_UP_HOURS:-}"
+if [ -n "$FILES_BACK_UP_HOURS" ] && [ "$FILES_BACK_UP_HOURS" -gt 0 ] 2>/dev/null; then
+    echo "Setting up cron job to run backup every $FILES_BACK_UP_HOURS hours"
+    
+    # Create a wrapper script that loads environment variables
+    cat > /home/frappe/run-backup.sh << 'CRON_WRAPPER_EOF'
+#!/bin/bash
+# Source environment variables
+if [ -f /home/frappe/s3-backup-env.sh ]; then
+    source /home/frappe/s3-backup-env.sh
+fi
+
+# Run the backup script
+/home/frappe/push-to-bucket.sh >> /home/frappe/backup.log 2>&1
+CRON_WRAPPER_EOF
+
+    chmod +x /home/frappe/run-backup.sh
+    chown frappe:frappe /home/frappe/run-backup.sh
+    
+    # Start cron daemon if not running
+    if ! pgrep -x cron > /dev/null; then
+        echo "Starting cron daemon..."
+        cron
+    fi
+    
+    # Add cron job (runs every FILES_BACK_UP_HOURS hours)
+    CRON_SCHEDULE="0 */${FILES_BACK_UP_HOURS} * * *"
+    (crontab -l 2>/dev/null | grep -v "run-backup.sh"; echo "${CRON_SCHEDULE} /home/frappe/run-backup.sh") | crontab -
+    echo "Cron job configured to run every $FILES_BACK_UP_HOURS hours"
+else
+    echo "FILES_BACK_UP_HOURS not set or invalid, skipping cron job setup"
+fi
+
+echo "=== Fetching data from S3 bucket (if available) ==="
+# Run fetch-from-bucket.sh to restore any existing data
+/home/frappe/fetch-from-bucket.sh || echo "Warning: Failed to fetch data from bucket (this is OK if bucket is empty)"
 
 echo "=== Starting bench ==="
 bench start
