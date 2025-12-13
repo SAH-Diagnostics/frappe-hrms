@@ -15,9 +15,9 @@ echo "=== Installing AWS CLI ==="
 if ! command -v aws &> /dev/null; then
     echo "Installing AWS CLI..."
     
-    # Update package list and install dependencies
-    apt-get update -qq
-    apt-get install -y -qq unzip curl
+    # Update package list and install dependencies (use sudo for apt-get)
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq unzip curl
     
     # Detect architecture
     ARCH=$(uname -m)
@@ -36,7 +36,7 @@ if ! command -v aws &> /dev/null; then
         if curl -f "$AWS_CLI_URL" -o "/tmp/awscliv2.zip" 2>/dev/null; then
             echo "Extracting and installing AWS CLI..."
             unzip -q /tmp/awscliv2.zip -d /tmp
-            /tmp/aws/install
+            sudo /tmp/aws/install
             rm -rf /tmp/aws /tmp/awscliv2.zip
         else
             echo "Failed to download AWS CLI. Using pip install as fallback..."
