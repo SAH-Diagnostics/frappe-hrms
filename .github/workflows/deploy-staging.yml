@@ -93,7 +93,8 @@ jobs:
             "docker/docker-compose.yml" \
             "$lightsail_user" \
             "$lightsail_host" \
-            "${lightsail_port:-22}"
+            "${lightsail_port:-22}" \
+            "staging"
 
       - name: Setup backup cron job
         if: success()

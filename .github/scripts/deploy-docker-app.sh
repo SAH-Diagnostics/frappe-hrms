@@ -11,11 +11,12 @@ set -e
 #   $5 - lightsail_user
 #   $6 - lightsail_host
 #   $7 - lightsail_port
-#   $8 - ssh_key_path
+#   $8 - BRANCH_NAME (git branch to checkout, default: staging)
+#   $9 - ssh_key_path
 
 # Display help if arguments are missing
 if [ $# -lt 7 ]; then
-    echo "Usage: $0 <REPO_URL> <DEPLOY_DIR> <ENV_FILE_SOURCE> <DOCKER_COMPOSE_FILE> <lightsail_user> <lightsail_host> <lightsail_port> [ssh_key_path]"
+    echo "Usage: $0 <REPO_URL> <DEPLOY_DIR> <ENV_FILE_SOURCE> <DOCKER_COMPOSE_FILE> <lightsail_user> <lightsail_host> <lightsail_port> [BRANCH_NAME] [ssh_key_path]"
     echo "Purpose: Deploy Docker application on remote instance"
     exit 1
 fi
@@ -27,7 +28,8 @@ DOCKER_COMPOSE_FILE="${4:-docker-compose.yml}"
 LIGHTSAIL_USER="$5"
 LIGHTSAIL_HOST="$6"
 LIGHTSAIL_PORT="$7"
-SSH_KEY_PATH="${8:-~/.ssh/lightsail_key}"
+BRANCH_NAME="${8:-staging}"
+SSH_KEY_PATH="${9:-~/.ssh/lightsail_key}"
 
 # Expand ~ to home directory
 SSH_KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
@@ -36,6 +38,7 @@ echo "Deploying Docker application to $LIGHTSAIL_USER@$LIGHTSAIL_HOST:$LIGHTSAIL
 echo "  Repository: $REPO_URL"
 echo "  Deployment Directory: $DEPLOY_DIR"
 echo "  Docker Compose File: $DOCKER_COMPOSE_FILE"
+echo "  Branch: $BRANCH_NAME"
 
 # SSH into instance and execute deployment commands
 ssh -i "$SSH_KEY_PATH" -p "$LIGHTSAIL_PORT" -o StrictHostKeyChecking=accept-new "$LIGHTSAIL_USER@$LIGHTSAIL_HOST" << EOF
@@ -63,16 +66,16 @@ sudo chown $LIGHTSAIL_USER:$LIGHTSAIL_USER $DEPLOY_DIR
 
 echo "=== Cloning or updating repository ==="
 if [ -d "$DEPLOY_DIR/.git" ]; then
-    echo "Repository exists, pulling latest changes..."
+    echo "Repository exists, pulling latest changes from branch: $BRANCH_NAME"
     cd $DEPLOY_DIR
     git fetch origin
-    git checkout staging || git checkout -b staging origin/staging
-    git pull origin staging
+    git checkout $BRANCH_NAME || git checkout -b $BRANCH_NAME origin/$BRANCH_NAME
+    git pull origin $BRANCH_NAME
 else
-    echo "Cloning repository..."
+    echo "Cloning repository and checking out branch: $BRANCH_NAME"
     git clone $REPO_URL $DEPLOY_DIR
     cd $DEPLOY_DIR
-    git checkout staging || git checkout -b staging origin/staging
+    git checkout $BRANCH_NAME || git checkout -b $BRANCH_NAME origin/$BRANCH_NAME
 fi
 
 echo "=== Copying .env file ==="
