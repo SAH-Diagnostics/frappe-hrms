@@ -239,38 +239,32 @@ echo "=== Starting backup to S3 at $(date) ==="
 echo "Site: $SITE_NAME"
 echo "Bucket: $BUCKET_NAME"
 
-# Sync private directory
+# Helper to build endpoint flag (if any)
+ENDPOINT_FLAG=()
+if [ -n "$BUCKET_ENDPOINT" ]; then
+    ENDPOINT_FLAG+=(--endpoint-url="$BUCKET_ENDPOINT")
+fi
+
+# Copy private directory (recursive)
 if [ -d "$PRIVATE_DIR" ]; then
     echo "Backing up private directory..."
-    if [ -n "$BUCKET_ENDPOINT" ]; then
-        aws s3 sync "$PRIVATE_DIR" "s3://$BUCKET_NAME/private" --endpoint-url="$BUCKET_ENDPOINT" --no-progress || echo "Warning: Failed to sync private directory"
-    else
-        aws s3 sync "$PRIVATE_DIR" "s3://$BUCKET_NAME/private" --no-progress || echo "Warning: Failed to sync private directory"
-    fi
+    aws s3 cp "$PRIVATE_DIR/" "s3://$BUCKET_NAME/private/" --recursive "${ENDPOINT_FLAG[@]}" --no-progress || echo "Warning: Failed to upload private directory"
 else
     echo "Warning: Private directory not found: $PRIVATE_DIR"
 fi
 
-# Sync public directory
+# Copy public directory (recursive)
 if [ -d "$PUBLIC_DIR" ]; then
     echo "Backing up public directory..."
-    if [ -n "$BUCKET_ENDPOINT" ]; then
-        aws s3 sync "$PUBLIC_DIR" "s3://$BUCKET_NAME/public" --endpoint-url="$BUCKET_ENDPOINT" --no-progress || echo "Warning: Failed to sync public directory"
-    else
-        aws s3 sync "$PUBLIC_DIR" "s3://$BUCKET_NAME/public" --no-progress || echo "Warning: Failed to sync public directory"
-    fi
+    aws s3 cp "$PUBLIC_DIR/" "s3://$BUCKET_NAME/public/" --recursive "${ENDPOINT_FLAG[@]}" --no-progress || echo "Warning: Failed to upload public directory"
 else
     echo "Warning: Public directory not found: $PUBLIC_DIR"
 fi
 
-# Sync logs directory
+# Copy logs directory (recursive)
 if [ -d "$LOGS_DIR" ]; then
     echo "Backing up logs directory..."
-    if [ -n "$BUCKET_ENDPOINT" ]; then
-        aws s3 sync "$LOGS_DIR" "s3://$BUCKET_NAME/logs" --endpoint-url="$BUCKET_ENDPOINT" --no-progress || echo "Warning: Failed to sync logs directory"
-    else
-        aws s3 sync "$LOGS_DIR" "s3://$BUCKET_NAME/logs" --no-progress || echo "Warning: Failed to sync logs directory"
-    fi
+    aws s3 cp "$LOGS_DIR/" "s3://$BUCKET_NAME/logs/" --recursive "${ENDPOINT_FLAG[@]}" --no-progress || echo "Warning: Failed to upload logs directory"
 else
     echo "Warning: Logs directory not found: $LOGS_DIR"
 fi
@@ -363,13 +357,18 @@ chown frappe:frappe /home/frappe/fetch-from-bucket.sh
 
 echo "=== Creating S3 backup environment file ==="
 # Export environment variables to a file that can be sourced by scripts and cron
+RAW_ENDPOINT="${BUCKET_ENDPOINT:-}"
+if [ -n "$RAW_ENDPOINT" ] && [[ "$RAW_ENDPOINT" != http*://* ]]; then
+    RAW_ENDPOINT="http://${RAW_ENDPOINT}"
+fi
+
 cat > /home/frappe/s3-backup-env.sh << EOF
 export SITE_NAME="${SITE_NAME:-dev-erp.sahdiagnostics.com}"
 export BUCKET_NAME="${BUCKET_NAME:-}"
 export BUCKET_ACCESS_KEY_ID="${BUCKET_ACCESS_KEY_ID:-}"
 export BUCKET_SECRET_ACCESS_KEY="${BUCKET_SECRET_ACCESS_KEY:-}"
 export BUCKET_REGION="${BUCKET_REGION:-eu-west-2}"
-export BUCKET_ENDPOINT="${BUCKET_ENDPOINT:-}"
+export BUCKET_ENDPOINT="${RAW_ENDPOINT}"
 EOF
 chmod 600 /home/frappe/s3-backup-env.sh
 chown frappe:frappe /home/frappe/s3-backup-env.sh
