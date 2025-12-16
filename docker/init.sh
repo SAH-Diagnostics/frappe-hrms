@@ -220,6 +220,11 @@ BUCKET_REGION="${BUCKET_REGION:-eu-west-2}"
 BUCKET_ENDPOINT="${BUCKET_ENDPOINT:-}"
 S3_BASE_PREFIX="${S3_BASE_PREFIX:-}"
 
+# Normalize endpoint URL if provided without scheme
+if [ -n "$BUCKET_ENDPOINT" ] && [[ "$BUCKET_ENDPOINT" != http*://* ]]; then
+    BUCKET_ENDPOINT="https://${BUCKET_ENDPOINT}"
+fi
+
 if [ -z "$BUCKET_NAME" ] || [ -z "$BUCKET_ACCESS_KEY_ID" ] || [ -z "$BUCKET_SECRET_ACCESS_KEY" ]; then
     echo "Error: S3 bucket configuration is missing. Required: BUCKET_NAME, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY"
     exit 1
@@ -303,6 +308,11 @@ BUCKET_SECRET_ACCESS_KEY="${BUCKET_SECRET_ACCESS_KEY:-}"
 BUCKET_REGION="${BUCKET_REGION:-eu-west-2}"
 BUCKET_ENDPOINT="${BUCKET_ENDPOINT:-}"
 S3_BASE_PREFIX="${S3_BASE_PREFIX:-}"
+
+# Normalize endpoint URL if provided without scheme
+if [ -n "$BUCKET_ENDPOINT" ] && [[ "$BUCKET_ENDPOINT" != http*://* ]]; then
+    BUCKET_ENDPOINT="https://${BUCKET_ENDPOINT}"
+fi
 
 if [ -z "$BUCKET_NAME" ] || [ -z "$BUCKET_ACCESS_KEY_ID" ] || [ -z "$BUCKET_SECRET_ACCESS_KEY" ]; then
     echo "Warning: S3 bucket configuration is missing. Skipping fetch from bucket."
