@@ -204,18 +204,16 @@ echo "=== Installing bucket helper scripts ==="
 
 # Determine the directory where this init.sh lives (inside the container image)
 INIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="${INIT_DIR}/docker"
+
+# In this deployment, helper scripts live next to init.sh (in /workspace)
+SCRIPTS_DIR="${INIT_DIR}"
 
 echo "Using scripts from: ${SCRIPTS_DIR}"
 
 # Copy S3 helper scripts into /home/frappe so they are easy to run
-for script in push-to-bucket.sh fetch-from-bucket.sh bucket-env.sh; do
-    if [ -f "${SCRIPTS_DIR}/${script}" ]; then
-        cp "${SCRIPTS_DIR}/${script}" "/home/frappe/${script}"
-    else
-        echo "Warning: ${SCRIPTS_DIR}/${script} not found; skipping copy" >&2
-    fi
-done
+cp "${SCRIPTS_DIR}/bucket-env.sh" "/home/frappe/bucket-env.sh"
+cp "${SCRIPTS_DIR}/push-to-bucket.sh" "/home/frappe/push-to-bucket.sh"
+cp "${SCRIPTS_DIR}/fetch-from-bucket.sh" "/home/frappe/fetch-from-bucket.sh"
 
 chmod +x /home/frappe/push-to-bucket.sh /home/frappe/fetch-from-bucket.sh 2>/dev/null || true
 chown frappe:frappe /home/frappe/push-to-bucket.sh /home/frappe/fetch-from-bucket.sh /home/frappe/bucket-env.sh 2>/dev/null || true
