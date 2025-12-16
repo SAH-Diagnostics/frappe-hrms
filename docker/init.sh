@@ -380,19 +380,17 @@ chown frappe:frappe /home/frappe/fetch-from-bucket.sh
 
 echo "=== Creating S3 backup environment file ==="
 # Export environment variables to a file that can be sourced by scripts and cron
-RAW_ENDPOINT="${BUCKET_ENDPOINT:-}"
-if [ -n "$RAW_ENDPOINT" ] && [[ "$RAW_ENDPOINT" != http*://* ]]; then
-    RAW_ENDPOINT="http://${RAW_ENDPOINT}"
-fi
-
 cat > /home/frappe/s3-backup-env.sh << EOF
 export SITE_NAME="${SITE_NAME:-dev-erp.sahdiagnostics.com}"
 export BUCKET_NAME="${BUCKET_NAME:-}"
 export BUCKET_ACCESS_KEY_ID="${BUCKET_ACCESS_KEY_ID:-}"
 export BUCKET_SECRET_ACCESS_KEY="${BUCKET_SECRET_ACCESS_KEY:-}"
 export BUCKET_REGION="${BUCKET_REGION:-eu-west-2}"
-export BUCKET_ENDPOINT="${RAW_ENDPOINT}"
 export S3_BASE_PREFIX="${S3_BASE_PREFIX:-}"
+export AWS_ACCESS_KEY="${BUCKET_ACCESS_KEY_ID:-}"
+export AWS_ACCESS_KEY_ID="${BUCKET_ACCESS_KEY_ID:-}"
+export AWS_SECRET_ACCESS_KEY="${BUCKET_SECRET_ACCESS_KEY:-}"
+export AWS_DEFAULT_REGION="${BUCKET_REGION:-eu-west-2}"
 EOF
 chmod 600 /home/frappe/s3-backup-env.sh
 chown frappe:frappe /home/frappe/s3-backup-env.sh
