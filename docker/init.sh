@@ -218,6 +218,7 @@ BUCKET_ACCESS_KEY_ID="${BUCKET_ACCESS_KEY_ID:-}"
 BUCKET_SECRET_ACCESS_KEY="${BUCKET_SECRET_ACCESS_KEY:-}"
 BUCKET_REGION="${BUCKET_REGION:-eu-west-2}"
 BUCKET_ENDPOINT="${BUCKET_ENDPOINT:-}"
+S3_BASE_PREFIX="${S3_BASE_PREFIX:-}"
 
 if [ -z "$BUCKET_NAME" ] || [ -z "$BUCKET_ACCESS_KEY_ID" ] || [ -z "$BUCKET_SECRET_ACCESS_KEY" ]; then
     echo "Error: S3 bucket configuration is missing. Required: BUCKET_NAME, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY"
@@ -245,10 +246,19 @@ if [ -n "$BUCKET_ENDPOINT" ]; then
     ENDPOINT_FLAG+=(--endpoint-url="$BUCKET_ENDPOINT")
 fi
 
-# Copy private directory (recursive)
+build_s3_path() {
+    local subpath="$1"
+    if [ -n "$S3_BASE_PREFIX" ]; then
+        echo "${S3_BASE_PREFIX%/}/$subpath"
+    else
+        echo "$subpath"
+    fi
+}
+
+# Copy private directory (recursive) using optional prefix
 if [ -d "$PRIVATE_DIR" ]; then
     echo "Backing up private directory..."
-    aws s3 cp "$PRIVATE_DIR/" "s3://$BUCKET_NAME/private/" --recursive "${ENDPOINT_FLAG[@]}" --no-progress || echo "Warning: Failed to upload private directory"
+    aws s3 sync "$PRIVATE_DIR/" "s3://$BUCKET_NAME/$(build_s3_path "private/")" --no-progress "${ENDPOINT_FLAG[@]}" || echo "Warning: Failed to upload private directory"
 else
     echo "Warning: Private directory not found: $PRIVATE_DIR"
 fi
@@ -256,7 +266,7 @@ fi
 # Copy public directory (recursive)
 if [ -d "$PUBLIC_DIR" ]; then
     echo "Backing up public directory..."
-    aws s3 cp "$PUBLIC_DIR/" "s3://$BUCKET_NAME/public/" --recursive "${ENDPOINT_FLAG[@]}" --no-progress || echo "Warning: Failed to upload public directory"
+    aws s3 sync "$PUBLIC_DIR/" "s3://$BUCKET_NAME/$(build_s3_path "public/")" --no-progress "${ENDPOINT_FLAG[@]}" || echo "Warning: Failed to upload public directory"
 else
     echo "Warning: Public directory not found: $PUBLIC_DIR"
 fi
@@ -264,7 +274,7 @@ fi
 # Copy logs directory (recursive)
 if [ -d "$LOGS_DIR" ]; then
     echo "Backing up logs directory..."
-    aws s3 cp "$LOGS_DIR/" "s3://$BUCKET_NAME/logs/" --recursive "${ENDPOINT_FLAG[@]}" --no-progress || echo "Warning: Failed to upload logs directory"
+    aws s3 sync "$LOGS_DIR/" "s3://$BUCKET_NAME/$(build_s3_path "logs/")" --no-progress "${ENDPOINT_FLAG[@]}" || echo "Warning: Failed to upload logs directory"
 else
     echo "Warning: Logs directory not found: $LOGS_DIR"
 fi
@@ -292,6 +302,7 @@ BUCKET_ACCESS_KEY_ID="${BUCKET_ACCESS_KEY_ID:-}"
 BUCKET_SECRET_ACCESS_KEY="${BUCKET_SECRET_ACCESS_KEY:-}"
 BUCKET_REGION="${BUCKET_REGION:-eu-west-2}"
 BUCKET_ENDPOINT="${BUCKET_ENDPOINT:-}"
+S3_BASE_PREFIX="${S3_BASE_PREFIX:-}"
 
 if [ -z "$BUCKET_NAME" ] || [ -z "$BUCKET_ACCESS_KEY_ID" ] || [ -z "$BUCKET_SECRET_ACCESS_KEY" ]; then
     echo "Warning: S3 bucket configuration is missing. Skipping fetch from bucket."
@@ -317,11 +328,23 @@ echo "Bucket: $BUCKET_NAME"
 mkdir -p "$PRIVATE_DIR" "$PUBLIC_DIR" "$LOGS_DIR"
 chown -R frappe:frappe "$SITE_DIR" 2>/dev/null || true
 
+# Helper to build S3 path with optional prefix
+build_s3_path() {
+    local subpath="$1"
+    if [ -n "$S3_BASE_PREFIX" ]; then
+        echo "${S3_BASE_PREFIX%/}/$subpath"
+    else
+        echo "$subpath"
+    fi
+}
+
 # Check if bucket has data and fetch
 check_and_sync() {
     local local_dir="$1"
-    local s3_path="$2"
+    local s3_subpath="$2"
     local dir_name="$3"
+    local s3_path
+    s3_path="$(build_s3_path "$s3_subpath")"
     
     echo "Checking $dir_name directory in bucket..."
     if [ -n "$BUCKET_ENDPOINT" ]; then
@@ -369,6 +392,7 @@ export BUCKET_ACCESS_KEY_ID="${BUCKET_ACCESS_KEY_ID:-}"
 export BUCKET_SECRET_ACCESS_KEY="${BUCKET_SECRET_ACCESS_KEY:-}"
 export BUCKET_REGION="${BUCKET_REGION:-eu-west-2}"
 export BUCKET_ENDPOINT="${RAW_ENDPOINT}"
+export S3_BASE_PREFIX="${S3_BASE_PREFIX:-}"
 EOF
 chmod 600 /home/frappe/s3-backup-env.sh
 chown frappe:frappe /home/frappe/s3-backup-env.sh
