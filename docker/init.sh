@@ -60,16 +60,18 @@ else
     echo "✓ AWS CLI already installed: $(aws --version)"
 fi
 
-echo "=== Recreating bench and site (${SITE_NAME}) ==="
+echo "=== Initializing bench and site (${SITE_NAME}) ==="
 
 # Ensure node in PATH for bench
 export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 
-# Always start from a clean bench inside the container
+# Initialize bench directory if it does not exist (non-destructive)
 BENCH_DIR="/home/frappe/frappe-bench"
 cd /home/frappe
-rm -rf "$BENCH_DIR" 2>/dev/null || true
-bench init --skip-redis-config-generation frappe-bench
+if [ ! -d "$BENCH_DIR" ]; then
+    echo "Creating bench at ${BENCH_DIR}"
+    bench init --skip-redis-config-generation frappe-bench
+fi
 cd "$BENCH_DIR"
 
 # Basic ownership to avoid permission surprises
@@ -100,46 +102,49 @@ echo "=== Getting apps ==="
 bench get-app erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
 bench get-app hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
-echo "=== Recreating site: $SITE_NAME ==="
-# Drop existing site if present, then remove its files
-if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
-    bench drop-site "$SITE_NAME" --force --no-backup || true
-fi
-rm -rf "/home/frappe/frappe-bench/sites/$SITE_NAME" 2>/dev/null || true
+echo "=== Preparing site: $SITE_NAME ==="
 
-# For external RDS databases, try new-site first, fallback to manual creation if CREATE USER fails
+# For external RDS databases, try to reuse existing site/DB if present,
+# otherwise create the site once (non-destructive on subsequent runs).
 if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
-    echo "Creating site with RDS database..."
-    
-    # Try bench new-site first (might work if RDS allows it for master user)
-    if bench new-site "$SITE_NAME" \
-        --force \
-        --db-host "$DB_HOST_VALUE" \
-        --db-port "$DB_PORT_VALUE" \
-        --db-user "$DB_USER_VALUE" \
-        --db-password "$DB_PASSWORD_VALUE" \
-        --db-name "$DB_NAME_VALUE" \
-        --db-type "mariadb" \
-        --db-root-password "$DB_PASSWORD_VALUE" \
-        --db-root-username "$DB_USER_VALUE" \
-        --admin-password "$ADMIN_PASSWORD_VALUE" \
-        --verbose \
-        --no-mariadb-socket 2>&1; then
-        echo "Site created successfully using bench new-site"
-    else
-        echo "bench new-site failed (likely CREATE USER restriction), creating site manually..."
-        
-        # Create site directory structure
-        mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/logs"
-        mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/private"
-        mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
-        
-        # Ensure target database exists (idempotent; requires privileges on RDS user)
-        mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
-            -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || true
+    echo "Using external RDS database for site: $SITE_NAME"
 
-        # Create site_config.json with RDS credentials
-        cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
+    if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
+        echo "Existing RDS-backed site detected; running migrate without dropping database..."
+        bench --site "$SITE_NAME" migrate || true
+    else
+        echo "No existing site detected; creating site on RDS (one-time operation)..."
+
+        # Try bench new-site first (might work if RDS allows it for master user)
+        if bench new-site "$SITE_NAME" \
+            --force \
+            --db-host "$DB_HOST_VALUE" \
+            --db-port "$DB_PORT_VALUE" \
+            --db-user "$DB_USER_VALUE" \
+            --db-password "$DB_PASSWORD_VALUE" \
+            --db-name "$DB_NAME_VALUE" \
+            --db-type "mariadb" \
+            --db-root-password "$DB_PASSWORD_VALUE" \
+            --db-root-username "$DB_USER_VALUE" \
+            --admin-password "$ADMIN_PASSWORD_VALUE" \
+            --verbose \
+            --no-mariadb-socket 2>&1; then
+            echo "Site created successfully using bench new-site"
+        else
+            echo "bench new-site failed (likely CREATE USER restriction), creating site manually..."
+
+            # Create site directory structure
+            mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/logs"
+            mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/private"
+            mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
+
+            # Ensure target database exists (idempotent; requires privileges on RDS user)
+            mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+                -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || true
+
+            # Create site_config.json with RDS credentials (only if it does not already exist)
+            if [ ! -f "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" ]; then
+                cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
 {
  "db_name": "$DB_NAME_VALUE",
  "db_password": "$DB_PASSWORD_VALUE",
@@ -151,29 +156,37 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
  "webserver_port": "443"
 }
 EOF
-        
-        # Set global config
-        bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
-        bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
-        
-        # Initialize database schema using install-app frappe
-        echo "Initializing database schema..."
-        bench --site "$SITE_NAME" install-app frappe --force || {
-            echo "Warning: install-app frappe failed, trying migrate..."
-            bench --site "$SITE_NAME" migrate || true
-        }
+            fi
+
+            # Set global config
+            bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
+            bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
+
+            # Initialize database schema using install-app frappe
+            echo "Initializing database schema..."
+            bench --site "$SITE_NAME" install-app frappe --force || {
+                echo "Warning: install-app frappe failed, trying migrate..."
+                bench --site "$SITE_NAME" migrate || true
+            }
+        fi
     fi
 else
-    # For local MariaDB, use standard new-site command
-    bench new-site "$SITE_NAME" \
-        --force \
-        ${DB_NAME_VALUE:+--db-name "$DB_NAME_VALUE"} \
-        ${DB_HOST_VALUE:+--db-host "$DB_HOST_VALUE"} \
-        ${DB_PORT_VALUE:+--db-port "$DB_PORT_VALUE"} \
-        --mariadb-root-password "$DB_PASSWORD_VALUE" \
-        --mariadb-root-username "$DB_USER_VALUE" \
-        --admin-password "$ADMIN_PASSWORD_VALUE" \
-        --no-mariadb-socket
+    # Local MariaDB: reuse existing site if present, otherwise create it once.
+    if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
+        echo "Existing local site detected; running migrate without dropping database..."
+        bench --site "$SITE_NAME" migrate || true
+    else
+        echo "No existing local site detected; creating new local site..."
+        bench new-site "$SITE_NAME" \
+            --force \
+            ${DB_NAME_VALUE:+--db-name "$DB_NAME_VALUE"} \
+            ${DB_HOST_VALUE:+--db-host "$DB_HOST_VALUE"} \
+            ${DB_PORT_VALUE:+--db-port "$DB_PORT_VALUE"} \
+            --mariadb-root-password "$DB_PASSWORD_VALUE" \
+            --mariadb-root-username "$DB_USER_VALUE" \
+            --admin-password "$ADMIN_PASSWORD_VALUE" \
+            --no-mariadb-socket
+    fi
 fi
 
 # Ensure the site knows its public URL so generated links use the correct host
@@ -192,8 +205,8 @@ echo "=== Setting webserver_port to 443 ==="
 bench set-config --global webserver_port 443 || true
 bench --site "$SITE_NAME" set-config webserver_port 443
 
-echo "=== Installing HRMS app ==="
-bench --site "$SITE_NAME" install-app hrms
+echo "=== Installing HRMS app (idempotent) ==="
+bench --site "$SITE_NAME" install-app hrms || true
 bench --site "$SITE_NAME" set-config developer_mode 1
 bench --site "$SITE_NAME" enable-scheduler
 
@@ -214,9 +227,16 @@ echo "Using scripts from: ${SCRIPTS_DIR}"
 cp "${SCRIPTS_DIR}/bucket-env.sh" "/home/frappe/bucket-env.sh"
 cp "${SCRIPTS_DIR}/push-to-bucket.sh" "/home/frappe/push-to-bucket.sh"
 cp "${SCRIPTS_DIR}/fetch-from-bucket.sh" "/home/frappe/fetch-from-bucket.sh"
+cp "${SCRIPTS_DIR}/create-push-cron-job.sh" "/home/frappe/create-push-cron-job.sh"
 
-chmod +x /home/frappe/push-to-bucket.sh /home/frappe/fetch-from-bucket.sh 2>/dev/null || true
-chown frappe:frappe /home/frappe/push-to-bucket.sh /home/frappe/fetch-from-bucket.sh /home/frappe/bucket-env.sh 2>/dev/null || true
+chmod +x /home/frappe/push-to-bucket.sh /home/frappe/fetch-from-bucket.sh /home/frappe/create-push-cron-job.sh 2>/dev/null || true
+chown frappe:frappe /home/frappe/push-to-bucket.sh /home/frappe/fetch-from-bucket.sh /home/frappe/create-push-cron-job.sh /home/frappe/bucket-env.sh 2>/dev/null || true
+
+echo "=== Running initial fetch-from-bucket to populate site files (if any) ==="
+/home/frappe/fetch-from-bucket.sh || echo "Warning: initial fetch-from-bucket.sh failed (bucket may be empty or AWS not configured)"
+
+echo "=== Configuring cron job for periodic push-to-bucket backups ==="
+/home/frappe/create-push-cron-job.sh || echo "Warning: create-push-cron-job.sh failed; automatic backups may not run"
 
 echo "=== Starting bench ==="
 bench start
