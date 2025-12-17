@@ -96,18 +96,6 @@ jobs:
             "${lightsail_port:-22}" \
             "main"
 
-      - name: Setup backup cron job
-        if: success()
-        run: |
-          source ${{ github.workspace }}/secrets.env
-          .github/scripts/setup-backup-cron.sh \
-            "$SITE_URL" \
-            "$BUCKET_NAME" \
-            "${FILES_BACK_UP_HOURS:-24}" \
-            "$lightsail_user" \
-            "$lightsail_host" \
-            "${lightsail_port:-22}"
-
       - name: Get container status
         if: always()
         run: |
