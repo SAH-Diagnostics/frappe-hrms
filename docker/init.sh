@@ -142,9 +142,8 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
             mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/private"
             mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
 
-            # Create site_config.json with RDS credentials (only if it does not already exist)
-            if [ ! -f "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" ]; then
-                cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
+            # Create/overwrite site_config.json with RDS credentials (force overwrite to ensure correct credentials)
+            cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
 {
  "db_name": "$DB_NAME_VALUE",
  "db_password": "$DB_PASSWORD_VALUE",
@@ -156,11 +155,11 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
  "webserver_port": "443"
 }
 EOF
-            fi
 
             # Ensure global config matches RDS
             bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
             bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
+            bench set-config --global db_user "$DB_USER_VALUE" 2>/dev/null || true
 
             # Only migrate the existing database; do NOT recreate or reinstall.
             bench --site "$SITE_NAME" migrate || true
@@ -193,9 +192,8 @@ EOF
                 mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
                     -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || true
 
-                # Create site_config.json with RDS credentials (only if it does not already exist)
-                if [ ! -f "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" ]; then
-                    cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
+                # Create/overwrite site_config.json with RDS credentials (force overwrite to ensure correct credentials)
+                cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
 {
  "db_name": "$DB_NAME_VALUE",
  "db_password": "$DB_PASSWORD_VALUE",
@@ -207,11 +205,11 @@ EOF
  "webserver_port": "443"
 }
 EOF
-                fi
 
                 # Set global config
                 bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
                 bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
+                bench set-config --global db_user "$DB_USER_VALUE" 2>/dev/null || true
 
                 # Initialize database schema using install-app frappe (no force, DB is known-empty)
                 echo "Initializing database schema..."
