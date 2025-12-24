@@ -216,6 +216,46 @@ bench get-app hrms --branch version-14 || echo "Warning: Failed to get hrms app 
 
 echo "=== Preparing site: $SITE_NAME ==="
 
+# Helper: test database connection and permissions
+test_database_connection() {
+    if [ -z "$DB_HOST_VALUE" ] || [ -z "$DB_NAME_VALUE" ] || [ -z "$DB_USER_VALUE" ] || [ -z "$DB_PASSWORD_VALUE" ]; then
+        echo "Error: Missing database configuration (DB_HOST, DB_NAME, DB_USER, or DB_PASSWORD)"
+        return 1
+    fi
+
+    echo "Testing database connection to $DB_USER_VALUE@$DB_HOST_VALUE:$DB_PORT_VALUE/$DB_NAME_VALUE..."
+    
+    # Test basic connection
+    if ! mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+        -e "SELECT 1;" 2>/dev/null; then
+        echo "✗ ERROR: Cannot connect to database. Please check:"
+        echo "  1. RDS security group allows connections from this EC2 instance"
+        echo "  2. Database user '$DB_USER_VALUE' has permission to connect from this host"
+        echo "  3. Database credentials are correct"
+        echo ""
+        echo "To fix this, run on RDS (as admin user):"
+        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'%' IDENTIFIED BY 'password';"
+        echo "  FLUSH PRIVILEGES;"
+        echo ""
+        echo "Or grant access from specific host:"
+        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'ec2-35-179-41-158.eu-west-2.compute.amazonaws.com' IDENTIFIED BY 'password';"
+        echo "  FLUSH PRIVILEGES;"
+        return 1
+    fi
+
+    # Test database access
+    if ! mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+        -D "$DB_NAME_VALUE" \
+        -e "SELECT 1;" 2>/dev/null; then
+        echo "✗ ERROR: Cannot access database '$DB_NAME_VALUE'. User may not have privileges."
+        echo "Please ensure user '$DB_USER_VALUE' has privileges on database '$DB_NAME_VALUE'"
+        return 1
+    fi
+
+    echo "✓ Database connection successful"
+    return 0
+}
+
 # Helper: detect whether the target RDS database already contains a Frappe schema.
 # We treat the presence of core tables (e.g. tabUser) as "site already exists".
 database_has_frappe_site() {
@@ -239,6 +279,13 @@ database_has_frappe_site() {
 # otherwise create the site once (non-destructive on subsequent runs).
 if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
     echo "Using external RDS database for site: $SITE_NAME"
+
+    # Test database connection before proceeding
+    if ! test_database_connection; then
+        echo "✗ FATAL: Database connection test failed. Cannot proceed with site setup."
+        echo "Please fix the database permissions and restart the container."
+        exit 1
+    fi
 
     if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
         echo "Existing RDS-backed site detected; running migrate without dropping database..."
@@ -300,8 +347,13 @@ EOF
                 mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
 
                 # Ensure target database exists (idempotent; requires privileges on RDS user)
-                mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
-                    -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || true
+                if ! mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+                    -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null; then
+                    echo "✗ WARNING: Could not create database '$DB_NAME_VALUE'. It may already exist or user lacks CREATE privilege."
+                    echo "Attempting to continue with existing database..."
+                else
+                    echo "✓ Database '$DB_NAME_VALUE' ready"
+                fi
 
                 # Create/overwrite site_config.json with RDS credentials (force overwrite to ensure correct credentials)
                 cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
@@ -324,10 +376,19 @@ EOF
 
                 # Initialize database schema using install-app frappe (no force, DB is known-empty)
                 echo "Initializing database schema..."
-                bench --site "$SITE_NAME" install-app frappe || {
-                    echo "Warning: install-app frappe failed, trying migrate..."
-                    bench --site "$SITE_NAME" migrate || true
-                }
+                if ! bench --site "$SITE_NAME" install-app frappe 2>&1; then
+                    echo "✗ ERROR: install-app frappe failed"
+                    echo "This is likely due to database permission issues."
+                    echo "Please ensure the database user has proper permissions:"
+                    echo "  - SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX on database '$DB_NAME_VALUE'"
+                    echo "  - Permission to connect from this EC2 instance"
+                    echo ""
+                    echo "Trying migrate as fallback..."
+                    if ! bench --site "$SITE_NAME" migrate 2>&1; then
+                        echo "✗ ERROR: migrate also failed. Please check database permissions and restart."
+                        exit 1
+                    fi
+                fi
             fi
         fi
     fi
@@ -367,9 +428,16 @@ bench set-config --global webserver_port 443 || true
 bench --site "$SITE_NAME" set-config webserver_port 443
 
 echo "=== Installing HRMS app (idempotent) ==="
-bench --site "$SITE_NAME" install-app hrms || true
-bench --site "$SITE_NAME" set-config developer_mode 1
-bench --site "$SITE_NAME" enable-scheduler
+if ! bench --site "$SITE_NAME" install-app hrms 2>&1; then
+    echo "✗ WARNING: install-app hrms failed. This may be due to database permission issues."
+    echo "The app may already be installed, or there may be permission problems."
+    echo "Continuing with other operations..."
+fi
+bench --site "$SITE_NAME" set-config developer_mode 1 || true
+if ! bench --site "$SITE_NAME" enable-scheduler 2>&1; then
+    echo "✗ WARNING: enable-scheduler failed. This may be due to database permission issues."
+    echo "Continuing with other operations..."
+fi
 
 bench --site "$SITE_NAME" clear-cache || true
 bench use "$SITE_NAME" || true
