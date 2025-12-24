@@ -9,9 +9,9 @@ set -e
 # Minimum Python version required (for compatibility checks)
 MIN_REQUIRED_VERSION="${MIN_REQUIRED_VERSION:-3.12}"
 # Maximum Python version (to avoid compatibility issues with older packages)
-# Note: Python 3.13+ may have issues with hiredis==2.0.0 (uses deprecated 'imp' module)
-# Set to 3.13 to allow latest stable Python versions
-MAX_PYTHON_VERSION="${MAX_PYTHON_VERSION:-3.13}"
+# Note: Python 3.13+ has issues with hiredis==2.0.0 (uses deprecated 'imp' module)
+# Capped at 3.12 to ensure compatibility with hiredis 2.0.0
+MAX_PYTHON_VERSION="${MAX_PYTHON_VERSION:-3.12}"
 
 echo "=== Upgrading Python to latest stable version using pyenv ==="
 
