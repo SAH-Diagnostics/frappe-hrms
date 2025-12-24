@@ -333,6 +333,8 @@ EOF
                 --db-root-username "$DB_USER_VALUE" \
                 --db-root-password "$DB_PASSWORD_VALUE" \
                 --db-name "$DB_NAME_VALUE" \
+                --db-user "$DB_USER_VALUE" \
+                --db-password "$DB_PASSWORD_VALUE" \
                 --db-type "mariadb" \
                 --admin-password "$ADMIN_PASSWORD_VALUE" \
                 --verbose \
