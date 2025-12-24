@@ -10,6 +10,24 @@ DB_NAME_VALUE="${DB_NAME:-${RDS_DB_NAME:-}}"
 ADMIN_PASSWORD_VALUE="${ADMIN_PASSWORD:-admin}"
 SITE_NAME="${SITE_NAME:-hrms.localhost}"
 
+echo "=== Upgrading Python ==="
+# Determine the directory where this init.sh lives (inside the container image)
+INIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Run Python upgrade script before other operations
+if [ -f "${INIT_DIR}/upgrade-python.sh" ]; then
+    bash "${INIT_DIR}/upgrade-python.sh" || {
+        echo "Warning: Python upgrade script failed, continuing with system Python"
+    }
+    # Ensure pyenv shims are in PATH for subsequent commands
+    if [ -d "$HOME/.pyenv" ]; then
+        export PYENV_ROOT="$HOME/.pyenv"
+        export PATH="$PYENV_ROOT/shims:$PYENV_ROOT/bin:$PATH"
+        eval "$(pyenv init -)" 2>/dev/null || true
+    fi
+else
+    echo "Warning: upgrade-python.sh not found, skipping Python upgrade"
+fi
+
 echo "=== Installing AWS CLI ==="
 # Install aws-cli if not already installed
 if ! command -v aws &> /dev/null; then
@@ -70,9 +88,37 @@ BENCH_DIR="/home/frappe/frappe-bench"
 cd /home/frappe
 if [ ! -d "$BENCH_DIR" ]; then
     echo "Creating bench at ${BENCH_DIR}"
+    # Ensure we use the upgraded Python version for bench init
+    if command -v pyenv &> /dev/null; then
+        export PATH="$(pyenv root)/shims:$PATH"
+        eval "$(pyenv init -)" 2>/dev/null || true
+    fi
+    # Use python3 explicitly to ensure we use the upgraded version
+    PYTHON_CMD=$(which python3)
+    echo "Using Python: $PYTHON_CMD ($($PYTHON_CMD --version))"
+    bench init --skip-redis-config-generation --python "$PYTHON_CMD" frappe-bench || \
     bench init --skip-redis-config-generation frappe-bench
 fi
 cd "$BENCH_DIR"
+
+# Check if virtual environment needs to be recreated with upgraded Python
+if [ -d "$BENCH_DIR/env" ]; then
+    VENV_PYTHON="$BENCH_DIR/env/bin/python"
+    if [ -f "$VENV_PYTHON" ]; then
+        VENV_VERSION=$("$VENV_PYTHON" --version 2>&1 | grep -oP '\d+\.\d+' | head -1 || echo "0.0")
+        CURRENT_PYTHON=$(python3 --version 2>&1 | grep -oP '\d+\.\d+' | head -1 || echo "0.0")
+        
+        # If venv Python is older than current Python, recreate it
+        if [ "$(printf '%s\n' "$CURRENT_PYTHON" "$VENV_VERSION" | sort -V | head -n1)" != "$CURRENT_PYTHON" ]; then
+            echo "Virtual environment uses Python $VENV_VERSION, but Python $CURRENT_PYTHON is available"
+            echo "Recreating virtual environment with Python $CURRENT_PYTHON..."
+            rm -rf "$BENCH_DIR/env"
+            python3 -m venv "$BENCH_DIR/env"
+            "$BENCH_DIR/env/bin/python" -m pip install --quiet --upgrade pip wheel
+            echo "✓ Virtual environment recreated with Python $CURRENT_PYTHON"
+        fi
+    fi
+fi
 
 # Basic ownership to avoid permission surprises
 chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
