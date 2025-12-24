@@ -1,15 +1,15 @@
 #!/bin/bash
 
 # upgrade-python.sh
-# Purpose: Upgrade Python to 3.12+ using pyenv for Frappe compatibility
-# This script ensures Python 3.12+ is available before bench initialization
+# Purpose: Upgrade Python to the latest stable version using pyenv
+# This script automatically detects and installs the latest stable Python version
 
 set -e
 
-TARGET_PYTHON_VERSION="${TARGET_PYTHON_VERSION:-3.12}"
-MINOR_VERSION="${MINOR_VERSION:-3.12.0}"
+# Minimum Python version required (for compatibility checks)
+MIN_REQUIRED_VERSION="${MIN_REQUIRED_VERSION:-3.12}"
 
-echo "=== Upgrading Python using pyenv ==="
+echo "=== Upgrading Python to latest stable version using pyenv ==="
 
 # Check if pyenv is available
 if ! command -v pyenv &> /dev/null; then
@@ -79,6 +79,52 @@ if command -v pyenv &> /dev/null || [ -d "$HOME/.pyenv" ]; then
     fi
 fi
 
+# Function to get the latest stable Python version from pyenv
+get_latest_stable_python() {
+    if ! command -v pyenv &> /dev/null; then
+        echo ""
+        return 1
+    fi
+    
+    # Get list of available Python versions from pyenv
+    # Filter for stable releases (exclude dev, alpha, beta, rc versions)
+    # Format: 3.12.0, 3.12.1, 3.13.0, etc.
+    LATEST_VERSION=$(pyenv install --list 2>/dev/null | \
+        grep -E "^\s+3\.[0-9]+\.[0-9]+$" | \
+        grep -vE "(a|b|rc|dev)" | \
+        sed 's/^[[:space:]]*//' | \
+        sort -V | \
+        tail -1)
+    
+    if [ -n "$LATEST_VERSION" ]; then
+        echo "$LATEST_VERSION"
+        return 0
+    else
+        echo ""
+        return 1
+    fi
+}
+
+# Function to get latest stable version from Python.org API (fallback)
+get_latest_stable_python_from_api() {
+    # Try to get latest stable version from Python.org
+    LATEST_VERSION=$(curl -s https://www.python.org/api/v2/downloads/releases/ | \
+        grep -oE '"name":\s*"Python\s+[0-9]+\.[0-9]+\.[0-9]+"' | \
+        head -1 | \
+        grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | \
+        head -1) || true
+    
+    if [ -n "$LATEST_VERSION" ]; then
+        echo "$LATEST_VERSION"
+        return 0
+    else
+        # Fallback: try a simpler approach - get latest from pyenv's known versions
+        # This is a conservative fallback
+        echo "3.13.0"  # Update this if needed as a last resort
+        return 0
+    fi
+}
+
 # Check if pyenv is now available
 if ! command -v pyenv &> /dev/null; then
     echo "✗ pyenv is still not available after installation attempt"
@@ -89,12 +135,12 @@ if ! command -v pyenv &> /dev/null; then
         CURRENT_VERSION=$(python3 --version 2>&1 | grep -oP '\d+\.\d+' | head -1)
         echo "Current system Python version: $CURRENT_VERSION"
         
-        if [ "$(printf '%s\n' "$TARGET_PYTHON_VERSION" "$CURRENT_VERSION" | sort -V | head -n1)" = "$TARGET_PYTHON_VERSION" ]; then
-            echo "✓ System Python $CURRENT_VERSION is >= $TARGET_PYTHON_VERSION"
+        if [ "$(printf '%s\n' "$MIN_REQUIRED_VERSION" "$CURRENT_VERSION" | sort -V | head -n1)" = "$MIN_REQUIRED_VERSION" ]; then
+            echo "✓ System Python $CURRENT_VERSION is >= $MIN_REQUIRED_VERSION"
             return 0
         else
-            echo "⚠ System Python $CURRENT_VERSION is < $TARGET_PYTHON_VERSION"
-            echo "⚠ Consider using a Docker image with Python 3.12+ or manually installing Python 3.12"
+            echo "⚠ System Python $CURRENT_VERSION is < $MIN_REQUIRED_VERSION"
+            echo "⚠ Consider using a Docker image with Python $MIN_REQUIRED_VERSION+ or manually installing Python"
             return 1
         fi
     else
@@ -106,43 +152,93 @@ fi
 # Check current Python version
 echo "Checking current Python version..."
 if command -v python3 &> /dev/null; then
-    CURRENT_VERSION=$(python3 --version 2>&1 | grep -oP '\d+\.\d+' | head -1 || echo "0.0")
+    CURRENT_VERSION=$(python3 --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1 || python3 --version 2>&1 | grep -oP '\d+\.\d+' | head -1 || echo "0.0.0")
     echo "Current Python version: $CURRENT_VERSION"
 else
-    CURRENT_VERSION="0.0"
+    CURRENT_VERSION="0.0.0"
 fi
+
+# Get the latest stable Python version
+echo "Detecting latest stable Python version..."
+LATEST_STABLE=$(get_latest_stable_python)
+
+if [ -z "$LATEST_STABLE" ]; then
+    echo "Could not get latest version from pyenv, trying API fallback..."
+    LATEST_STABLE=$(get_latest_stable_python_from_api)
+fi
+
+if [ -z "$LATEST_STABLE" ]; then
+    echo "✗ Could not determine latest stable Python version"
+    echo "Falling back to minimum required version: $MIN_REQUIRED_VERSION"
+    LATEST_STABLE="${MIN_REQUIRED_VERSION}.0"
+fi
+
+echo "Latest stable Python version available: $LATEST_STABLE"
+
+# Extract major.minor for comparison
+CURRENT_MAJOR_MINOR=$(echo "$CURRENT_VERSION" | grep -oP '\d+\.\d+' | head -1 || echo "0.0")
+LATEST_MAJOR_MINOR=$(echo "$LATEST_STABLE" | grep -oP '\d+\.\d+' | head -1)
 
 # Check if we need to upgrade
 NEEDS_UPGRADE=false
-if [ "$CURRENT_VERSION" = "0.0" ]; then
+if [ "$CURRENT_VERSION" = "0.0.0" ] || [ "$CURRENT_VERSION" = "0.0" ]; then
     NEEDS_UPGRADE=true
-elif [ "$(printf '%s\n' "$TARGET_PYTHON_VERSION" "$CURRENT_VERSION" | sort -V | head -n1)" != "$TARGET_PYTHON_VERSION" ]; then
+    echo "Python not found, will install latest stable version"
+elif [ "$(printf '%s\n' "$LATEST_STABLE" "$CURRENT_VERSION" | sort -V | head -n1)" != "$LATEST_STABLE" ]; then
+    # Current version is older than latest stable
     NEEDS_UPGRADE=true
+    echo "Current version ($CURRENT_VERSION) is older than latest stable ($LATEST_STABLE)"
+elif [ "$(printf '%s\n' "$MIN_REQUIRED_VERSION" "$CURRENT_MAJOR_MINOR" | sort -V | head -n1)" != "$MIN_REQUIRED_VERSION" ]; then
+    # Current version doesn't meet minimum requirement
+    NEEDS_UPGRADE=true
+    echo "Current version ($CURRENT_VERSION) doesn't meet minimum requirement ($MIN_REQUIRED_VERSION+)"
+else
+    echo "Current version ($CURRENT_VERSION) meets requirements (>= $MIN_REQUIRED_VERSION)"
+    # Check if we should still upgrade to latest for better features
+    if [ "$(printf '%s\n' "$LATEST_STABLE" "$CURRENT_VERSION" | sort -V | head -n1)" = "$LATEST_STABLE" ] && [ "$CURRENT_VERSION" != "$LATEST_STABLE" ]; then
+        echo "Note: Latest stable version ($LATEST_STABLE) is available, but current version is sufficient"
+        # Optionally upgrade anyway - uncomment the next line to always upgrade to latest
+        # NEEDS_UPGRADE=true
+    fi
 fi
 
 if [ "$NEEDS_UPGRADE" = true ]; then
-    echo "Python $TARGET_PYTHON_VERSION+ is required. Current version: $CURRENT_VERSION"
-    echo "Installing Python $MINOR_VERSION via pyenv..."
+    echo "Upgrading Python from $CURRENT_VERSION to $LATEST_STABLE..."
     
-    # Install Python 3.12 using pyenv
-    # Try specific version first, then fall back to major.minor
-    if pyenv install -s "$MINOR_VERSION" 2>/dev/null; then
-        echo "✓ Python $MINOR_VERSION installed successfully"
-        INSTALLED_VERSION="$MINOR_VERSION"
+    # Try to install the latest stable version
+    if pyenv install -s "$LATEST_STABLE" 2>/dev/null; then
+        echo "✓ Python $LATEST_STABLE installed successfully"
+        INSTALLED_VERSION="$LATEST_STABLE"
     else
-        echo "Trying to install latest Python $TARGET_PYTHON_VERSION..."
-        # Try to install latest patch version of 3.12
-        LATEST_312=$(pyenv install --list | grep -E "^\s+3\.12\.[0-9]+$" | tail -1 | xargs)
-        if [ -n "$LATEST_312" ]; then
-            if pyenv install -s "$LATEST_312"; then
-                echo "✓ Python $LATEST_312 installed successfully"
-                INSTALLED_VERSION="$LATEST_312"
+        echo "Failed to install $LATEST_STABLE, trying to find latest patch version of $LATEST_MAJOR_MINOR..."
+        
+        # Try to install latest patch version of the major.minor version
+        LATEST_PATCH=$(pyenv install --list 2>/dev/null | \
+            grep -E "^\s+${LATEST_MAJOR_MINOR}\.[0-9]+$" | \
+            grep -vE "(a|b|rc|dev)" | \
+            sed 's/^[[:space:]]*//' | \
+            sort -V | \
+            tail -1)
+        
+        if [ -n "$LATEST_PATCH" ]; then
+            if pyenv install -s "$LATEST_PATCH" 2>/dev/null; then
+                echo "✓ Python $LATEST_PATCH installed successfully"
+                INSTALLED_VERSION="$LATEST_PATCH"
             else
-                echo "✗ Failed to install Python $TARGET_PYTHON_VERSION"
-                return 1
+                echo "✗ Failed to install Python $LATEST_PATCH"
+                echo "Attempting to use minimum required version: $MIN_REQUIRED_VERSION"
+                # Try minimum required version as last resort
+                MIN_VERSION_FULL="${MIN_REQUIRED_VERSION}.0"
+                if pyenv install -s "$MIN_VERSION_FULL" 2>/dev/null; then
+                    echo "✓ Python $MIN_VERSION_FULL installed successfully (minimum required)"
+                    INSTALLED_VERSION="$MIN_VERSION_FULL"
+                else
+                    echo "✗ Failed to install Python. Please check pyenv installation."
+                    return 1
+                fi
             fi
         else
-            echo "✗ Could not find Python $TARGET_PYTHON_VERSION in pyenv"
+            echo "✗ Could not find a suitable Python version to install"
             return 1
         fi
     fi
@@ -157,15 +253,17 @@ if [ "$NEEDS_UPGRADE" = true ]; then
     export PATH="$(pyenv root)/shims:$PATH"
     
     # Verify the upgrade
-    NEW_VERSION=$(python3 --version 2>&1 | grep -oP '\d+\.\d+' | head -1)
-    if [ "$(printf '%s\n' "$TARGET_PYTHON_VERSION" "$NEW_VERSION" | sort -V | head -n1)" = "$TARGET_PYTHON_VERSION" ]; then
+    NEW_VERSION=$(python3 --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1 || python3 --version 2>&1 | grep -oP '\d+\.\d+' | head -1)
+    NEW_MAJOR_MINOR=$(echo "$NEW_VERSION" | grep -oP '\d+\.\d+' | head -1)
+    
+    if [ "$(printf '%s\n' "$MIN_REQUIRED_VERSION" "$NEW_MAJOR_MINOR" | sort -V | head -n1)" = "$MIN_REQUIRED_VERSION" ]; then
         echo "✓ Python upgraded successfully to: $NEW_VERSION"
     else
-        echo "⚠ Python version after upgrade: $NEW_VERSION (expected >= $TARGET_PYTHON_VERSION)"
+        echo "⚠ Python version after upgrade: $NEW_VERSION (expected >= $MIN_REQUIRED_VERSION)"
         return 1
     fi
 else
-    echo "✓ Python version is already sufficient: $CURRENT_VERSION (>= $TARGET_PYTHON_VERSION)"
+    echo "✓ Python version is already sufficient: $CURRENT_VERSION (>= $MIN_REQUIRED_VERSION)"
     
     # Still ensure pyenv shims are in PATH
     if command -v pyenv &> /dev/null; then
