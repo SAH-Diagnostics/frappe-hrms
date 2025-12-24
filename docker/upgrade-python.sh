@@ -88,9 +88,10 @@ get_latest_stable_python() {
     
     # Get list of available Python versions from pyenv
     # Filter for stable releases (exclude dev, alpha, beta, rc versions)
+    # Cap at Python 3.13.x (3.14+ doesn't exist yet as of 2024)
     # Format: 3.12.0, 3.12.1, 3.13.0, etc.
     LATEST_VERSION=$(pyenv install --list 2>/dev/null | \
-        grep -E "^\s+3\.[0-9]+\.[0-9]+$" | \
+        grep -E "^\s+3\.(1[0-3]|[0-9])\.[0-9]+$" | \
         grep -vE "(a|b|rc|dev)" | \
         sed 's/^[[:space:]]*//' | \
         sort -V | \

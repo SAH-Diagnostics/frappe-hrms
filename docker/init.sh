@@ -86,6 +86,13 @@ export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 # Initialize bench directory if it does not exist (non-destructive)
 BENCH_DIR="/home/frappe/frappe-bench"
 cd /home/frappe
+
+# Check if bench exists but is broken (missing apps.txt or incomplete)
+if [ -d "$BENCH_DIR" ] && [ ! -f "$BENCH_DIR/apps.txt" ]; then
+    echo "Detected broken bench installation (missing apps.txt), cleaning up..."
+    rm -rf "$BENCH_DIR"
+fi
+
 if [ ! -d "$BENCH_DIR" ]; then
     echo "Creating bench at ${BENCH_DIR}"
     # Ensure we use the upgraded Python version for bench init
@@ -96,6 +103,15 @@ if [ ! -d "$BENCH_DIR" ]; then
     # Use python3 explicitly to ensure we use the upgraded version
     PYTHON_CMD=$(which python3)
     echo "Using Python: $PYTHON_CMD ($($PYTHON_CMD --version))"
+    
+    # Pin Frappe to a stable branch that works with Python 3.12/3.13
+    # version-14 is compatible with Python 3.12+ and Node.js 20+
+    FRAPPE_BRANCH="${FRAPPE_BRANCH:-version-14}"
+    echo "Using Frappe branch: $FRAPPE_BRANCH"
+    
+    # Initialize bench with specific Frappe branch
+    bench init --skip-redis-config-generation --frappe-branch "$FRAPPE_BRANCH" --python "$PYTHON_CMD" frappe-bench || \
+    bench init --skip-redis-config-generation --frappe-branch "$FRAPPE_BRANCH" frappe-bench || \
     bench init --skip-redis-config-generation --python "$PYTHON_CMD" frappe-bench || \
     bench init --skip-redis-config-generation frappe-bench
 fi
@@ -145,9 +161,17 @@ sed -i '/redis/d' ./Procfile 2>/dev/null || true
 sed -i '/watch/d' ./Procfile 2>/dev/null || true
 
 echo "=== Getting apps ==="
-bench get-app https://github.com/frappe/frappe.git --branch version-14
-bench get-app https://github.com/frappe/erpnext.git --branch version-14
-bench get-app https://github.com/frappe/hrms.git --branch version-14
+# Frappe is already installed by bench init, but ensure it's on the correct branch
+if [ -d "$BENCH_DIR/apps/frappe" ]; then
+    cd "$BENCH_DIR/apps/frappe"
+    git fetch origin version-14 2>/dev/null || true
+    git checkout version-14 2>/dev/null || true
+    cd "$BENCH_DIR"
+fi
+
+# Get ERPNext and HRMS apps
+bench get-app erpnext --branch version-14 || echo "Warning: Failed to get erpnext app (may already exist)"
+bench get-app hrms --branch version-14 || echo "Warning: Failed to get hrms app (may already exist)"
 
 echo "=== Preparing site: $SITE_NAME ==="
 
