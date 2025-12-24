@@ -8,6 +8,10 @@ set -e
 
 # Minimum Python version required (for compatibility checks)
 MIN_REQUIRED_VERSION="${MIN_REQUIRED_VERSION:-3.12}"
+# Maximum Python version (to avoid compatibility issues with older packages)
+# Note: Python 3.13+ may have issues with hiredis==2.0.0 (uses deprecated 'imp' module)
+# Set to 3.13 to allow latest stable Python versions
+MAX_PYTHON_VERSION="${MAX_PYTHON_VERSION:-3.13}"
 
 echo "=== Upgrading Python to latest stable version using pyenv ==="
 
@@ -88,14 +92,32 @@ get_latest_stable_python() {
     
     # Get list of available Python versions from pyenv
     # Filter for stable releases (exclude dev, alpha, beta, rc versions)
-    # Cap at Python 3.13.x (3.14+ doesn't exist yet as of 2024)
-    # Format: 3.12.0, 3.12.1, 3.13.0, etc.
-    LATEST_VERSION=$(pyenv install --list 2>/dev/null | \
-        grep -E "^\s+3\.(1[0-3]|[0-9])\.[0-9]+$" | \
+    # Respect MAX_PYTHON_VERSION to avoid compatibility issues
+    # Format: 3.12.0, 3.12.1, etc.
+    MAX_MAJOR_MINOR=$(echo "$MAX_PYTHON_VERSION" | grep -oP '\d+\.\d+' | head -1)
+    
+    # Get all available versions
+    ALL_VERSIONS=$(pyenv install --list 2>/dev/null | \
+        grep -E "^\s+3\.[0-9]+\.[0-9]+$" | \
         grep -vE "(a|b|rc|dev)" | \
         sed 's/^[[:space:]]*//' | \
-        sort -V | \
-        tail -1)
+        sort -V)
+    
+    # Filter versions that are <= MAX_PYTHON_VERSION using version comparison
+    if [ -n "$MAX_MAJOR_MINOR" ]; then
+        # Add .999 to MAX to include all patch versions
+        MAX_VERSION="${MAX_MAJOR_MINOR}.999"
+        LATEST_VERSION=$(echo "$ALL_VERSIONS" | \
+            while read version; do
+                if [ "$(printf '%s\n' "$version" "$MAX_VERSION" | sort -V | head -n1)" = "$version" ]; then
+                    echo "$version"
+                fi
+            done | tail -1)
+    else
+        # Default: cap at 3.12 to avoid compatibility issues
+        LATEST_VERSION=$(echo "$ALL_VERSIONS" | \
+            grep -E "^3\.(1[0-2]|[0-9])\." | tail -1)
+    fi
     
     if [ -n "$LATEST_VERSION" ]; then
         echo "$LATEST_VERSION"
@@ -174,7 +196,11 @@ if [ -z "$LATEST_STABLE" ]; then
     LATEST_STABLE="${MIN_REQUIRED_VERSION}.0"
 fi
 
-echo "Latest stable Python version available: $LATEST_STABLE"
+if [ -n "$MAX_PYTHON_VERSION" ] && [ "$MAX_PYTHON_VERSION" != "999.999" ]; then
+    echo "Latest stable Python version available (capped at $MAX_PYTHON_VERSION for compatibility): $LATEST_STABLE"
+else
+    echo "Latest stable Python version available: $LATEST_STABLE"
+fi
 
 # Extract major.minor for comparison
 CURRENT_MAJOR_MINOR=$(echo "$CURRENT_VERSION" | grep -oP '\d+\.\d+' | head -1 || echo "0.0")
