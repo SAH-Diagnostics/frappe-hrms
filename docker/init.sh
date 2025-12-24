@@ -279,15 +279,14 @@ EOF
             echo "Empty (or non-Frappe) database on RDS; creating site on RDS (one-time operation)..."
 
             # Try bench new-site first (might work if RDS allows it for master user)
+            # Note: bench new-site uses --db-root-username for the database user, not --db-user
             if bench new-site "$SITE_NAME" \
                 --db-host "$DB_HOST_VALUE" \
                 --db-port "$DB_PORT_VALUE" \
-                --db-user "$DB_USER_VALUE" \
-                --db-password "$DB_PASSWORD_VALUE" \
+                --db-root-username "$DB_USER_VALUE" \
+                --db-root-password "$DB_PASSWORD_VALUE" \
                 --db-name "$DB_NAME_VALUE" \
                 --db-type "mariadb" \
-                --db-root-password "$DB_PASSWORD_VALUE" \
-                --db-root-username "$DB_USER_VALUE" \
                 --admin-password "$ADMIN_PASSWORD_VALUE" \
                 --verbose \
                 --no-mariadb-socket 2>&1; then
