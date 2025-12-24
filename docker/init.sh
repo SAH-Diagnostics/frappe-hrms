@@ -145,8 +145,9 @@ sed -i '/redis/d' ./Procfile 2>/dev/null || true
 sed -i '/watch/d' ./Procfile 2>/dev/null || true
 
 echo "=== Getting apps ==="
-bench get-app erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
-bench get-app hrms || echo "Warning: Failed to get hrms app (may already exist)"
+bench get-app https://github.com/frappe/frappe.git --branch version-14
+bench get-app https://github.com/frappe/erpnext.git --branch version-14
+bench get-app https://github.com/frappe/hrms.git --branch version-14
 
 echo "=== Preparing site: $SITE_NAME ==="
 
