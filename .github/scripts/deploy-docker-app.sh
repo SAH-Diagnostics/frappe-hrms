@@ -70,7 +70,9 @@ if [ -d "$DEPLOY_DIR/.git" ]; then
     cd $DEPLOY_DIR
     git fetch origin
     git checkout $BRANCH_NAME || git checkout -b $BRANCH_NAME origin/$BRANCH_NAME
-    git pull origin $BRANCH_NAME
+    # Reset any local changes to match remote (deployment should use latest from repo)
+    git reset --hard origin/$BRANCH_NAME
+    git clean -fd
 else
     echo "Cloning repository and checking out branch: $BRANCH_NAME"
     git clone $REPO_URL $DEPLOY_DIR
