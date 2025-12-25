@@ -42,25 +42,49 @@ test_database_connection() {
         -e "SHOW DATABASES LIKE '$DB_NAME_VALUE';" 2>/dev/null | grep -c "$DB_NAME_VALUE" || echo "0")
     
     if [ "$DB_EXISTS" = "0" ]; then
-        echo "✗ ERROR: Database '$DB_NAME_VALUE' does not exist."
-        echo "Please create the database manually."
-        return 1
+        echo "Database '$DB_NAME_VALUE' does not exist. Attempting to create it..."
+        # Try to create the database
+        if mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+            -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null; then
+            echo "✓ Database '$DB_NAME_VALUE' created successfully"
+        else
+            echo "✗ WARNING: Could not create database '$DB_NAME_VALUE'. User may not have CREATE privilege."
+            echo "Please create the database manually or ensure the user has CREATE privilege."
+            return 1
+        fi
     fi
     
     # Test database access
     if ! mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
         -D "$DB_NAME_VALUE" \
         -e "SELECT 1;" 2>/dev/null; then
-        echo "✗ ERROR: Cannot access database '$DB_NAME_VALUE'. User may not have privileges."
-        echo ""
-        echo "To fix this, connect to your MySQL/MariaDB server as an administrator and run:"
-        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'%';"
-        echo "  FLUSH PRIVILEGES;"
-        echo ""
-        echo "Or if you need to grant from a specific host:"
-        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'your-host-ip';"
-        echo "  FLUSH PRIVILEGES;"
-        return 1
+        echo "Cannot access database '$DB_NAME_VALUE'. Attempting to grant privileges..."
+        
+        # Try to grant privileges (this may fail if user doesn't have GRANT privilege)
+        if mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+            -e "GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'%'; FLUSH PRIVILEGES;" 2>/dev/null; then
+            echo "✓ Privileges granted successfully"
+            # Test access again
+            if mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+                -D "$DB_NAME_VALUE" \
+                -e "SELECT 1;" 2>/dev/null; then
+                echo "✓ Database access confirmed"
+            else
+                echo "✗ ERROR: Still cannot access database after granting privileges."
+                return 1
+            fi
+        else
+            echo "✗ WARNING: Could not grant privileges automatically. User may not have GRANT privilege."
+            echo ""
+            echo "To fix this, connect to your MySQL/MariaDB server as an administrator and run:"
+            echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'%';"
+            echo "  FLUSH PRIVILEGES;"
+            echo ""
+            echo "Or if you need to grant from a specific host:"
+            echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'your-host-ip';"
+            echo "  FLUSH PRIVILEGES;"
+            return 1
+        fi
     fi
 
     echo "✓ Database connection successful"
