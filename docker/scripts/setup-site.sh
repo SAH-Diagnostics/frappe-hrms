@@ -127,9 +127,12 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
             echo "Site exists with database schema; running migrations..."
             # Run migrations using Frappe Python API
             export FRAPPE_SITE="$SITE_NAME"
+            cd "$BENCH_DIR"
             "$BENCH_DIR/env/bin/python" -c "
 import frappe
-frappe.init(site='$SITE_NAME')
+import os
+os.chdir('$BENCH_DIR')
+frappe.init(site='$SITE_NAME', sites_path='$BENCH_DIR/sites')
 frappe.connect()
 frappe.db.commit()
 " 2>/dev/null || true
@@ -137,12 +140,15 @@ frappe.db.commit()
             echo "Site directory exists but database is empty; initializing..."
             # Initialize database schema
             export FRAPPE_SITE="$SITE_NAME"
+            cd "$BENCH_DIR"
             "$BENCH_DIR/env/bin/python" <<- PYTHON_SCRIPT
 import frappe
 import sys
+import os
 
 site = '$SITE_NAME'
-frappe.init(site=site)
+os.chdir('$BENCH_DIR')
+frappe.init(site=site, sites_path='$BENCH_DIR/sites')
 frappe.connect()
 
 # Install Frappe app (creates database schema)
@@ -191,9 +197,12 @@ EOF
 
             # Run migrations
             export FRAPPE_SITE="$SITE_NAME"
+            cd "$BENCH_DIR"
             "$BENCH_DIR/env/bin/python" -c "
 import frappe
-frappe.init(site='$SITE_NAME')
+import os
+os.chdir('$BENCH_DIR')
+frappe.init(site='$SITE_NAME', sites_path='$BENCH_DIR/sites')
 frappe.connect()
 frappe.db.commit()
 " 2>/dev/null || true
@@ -229,14 +238,21 @@ EOF
             # Initialize database schema using Frappe Python API
             echo "Initializing database schema..."
             export FRAPPE_SITE="$SITE_NAME"
+            cd "$BENCH_DIR"
             "$BENCH_DIR/env/bin/python" <<- PYTHON_SCRIPT
 import frappe
 import sys
+import os
 
 site = '$SITE_NAME'
 admin_password = '$ADMIN_PASSWORD_VALUE'
+sites_path = '$BENCH_DIR/sites'
 
-frappe.init(site=site)
+# Ensure we're in the bench directory
+os.chdir('$BENCH_DIR')
+
+# Initialize Frappe with explicit sites path
+frappe.init(site=site, sites_path=sites_path)
 frappe.connect()
 
 try:
@@ -291,14 +307,17 @@ EOF
         
         # Initialize database schema
         export FRAPPE_SITE="$SITE_NAME"
+        cd "$BENCH_DIR"
         "$BENCH_DIR/env/bin/python" <<- PYTHON_SCRIPT
 import frappe
 import sys
+import os
 
 site = '$SITE_NAME'
 admin_password = '$ADMIN_PASSWORD_VALUE'
+os.chdir('$BENCH_DIR')
 
-frappe.init(site=site)
+frappe.init(site=site, sites_path='$BENCH_DIR/sites')
 frappe.connect()
 
 try:
@@ -324,9 +343,12 @@ PYTHON_SCRIPT
     else
         echo "Existing local site detected; running migrations..."
         export FRAPPE_SITE="$SITE_NAME"
+        cd "$BENCH_DIR"
         "$BENCH_DIR/env/bin/python" -c "
 import frappe
-frappe.init(site='$SITE_NAME')
+import os
+os.chdir('$BENCH_DIR')
+frappe.init(site='$SITE_NAME', sites_path='$BENCH_DIR/sites')
 frappe.connect()
 frappe.db.commit()
 " 2>/dev/null || true
