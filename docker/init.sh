@@ -1,21 +1,30 @@
 #!/bin/bash
+# Minimal init.sh that orchestrates all setup scripts
+# All bench commands have been replaced with manual operations
 
 set -e
 
-DB_HOST_VALUE="${DB_HOST:-${RDS_HOSTNAME:-}}"
-DB_PORT_VALUE="${DB_PORT:-${RDS_PORT:-3306}}"
-DB_USER_VALUE="${DB_USER:-${RDS_USERNAME:-root}}"
-DB_PASSWORD_VALUE="${DB_PASSWORD:-${RDS_PASSWORD:-123}}"
-DB_NAME_VALUE="${DB_NAME:-${RDS_DB_NAME:-}}"
-ADMIN_PASSWORD_VALUE="${ADMIN_PASSWORD:-admin}"
-SITE_NAME="${SITE_NAME:-hrms.localhost}"
-
-echo "=== Upgrading Python ==="
-# Determine the directory where this init.sh lives (inside the container image)
+# Determine script directory
 INIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Run Python upgrade script before other operations
-if [ -f "${INIT_DIR}/upgrade-python.sh" ]; then
-    bash "${INIT_DIR}/upgrade-python.sh" || {
+SCRIPTS_DIR="$INIT_DIR/scripts"
+
+# Ensure scripts directory exists
+if [ ! -d "$SCRIPTS_DIR" ]; then
+    echo "Error: scripts directory not found: $SCRIPTS_DIR"
+    exit 1
+fi
+
+# Make all scripts executable
+chmod +x "$SCRIPTS_DIR"/*.sh 2>/dev/null || true
+
+echo "=========================================="
+echo "Frappe HRMS Initialization"
+echo "=========================================="
+
+# Step 1: Upgrade Python (if upgrade script exists)
+if [ -f "$INIT_DIR/upgrade-python.sh" ]; then
+    echo ""
+    bash "$INIT_DIR/upgrade-python.sh" || {
         echo "Warning: Python upgrade script failed, continuing with system Python"
     }
     # Ensure pyenv shims are in PATH for subsequent commands
@@ -24,482 +33,76 @@ if [ -f "${INIT_DIR}/upgrade-python.sh" ]; then
         export PATH="$PYENV_ROOT/shims:$PYENV_ROOT/bin:$PATH"
         eval "$(pyenv init -)" 2>/dev/null || true
     fi
+fi
+
+# Step 2: Install AWS CLI
+if [ -f "$SCRIPTS_DIR/install-aws-cli.sh" ]; then
+    echo ""
+    bash "$SCRIPTS_DIR/install-aws-cli.sh"
 else
-    echo "Warning: upgrade-python.sh not found, skipping Python upgrade"
-fi
-
-echo "=== Installing AWS CLI ==="
-# Install aws-cli if not already installed
-if ! command -v aws &> /dev/null; then
-    echo "Installing AWS CLI..."
-    
-    # Update package list and install dependencies (use sudo for apt-get)
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq unzip curl
-    
-    # Detect architecture
-    ARCH=$(uname -m)
-    if [ "$ARCH" = "x86_64" ]; then
-        AWS_CLI_URL="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
-    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-        AWS_CLI_URL="https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip"
+    echo ""
+    echo "=== Installing AWS CLI ==="
+    if ! command -v aws &> /dev/null; then
+        echo "Warning: install-aws-cli.sh not found and AWS CLI not installed"
     else
-        echo "Unsupported architecture: $ARCH. Using pip install."
-        pip install awscli
-    fi
-    
-    # Download and install AWS CLI
-    if [ -n "$AWS_CLI_URL" ]; then
-        echo "Downloading AWS CLI for $ARCH..."
-        if curl -f "$AWS_CLI_URL" -o "/tmp/awscliv2.zip" 2>/dev/null; then
-            echo "Extracting and installing AWS CLI..."
-            unzip -q /tmp/awscliv2.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/aws /tmp/awscliv2.zip
-        else
-            echo "Failed to download AWS CLI. Using pip install as fallback..."
-            pip install awscli
-        fi
-    fi
-    
-    # Verify installation
-    if command -v aws &> /dev/null; then
-        echo "✓ AWS CLI installed successfully: $(aws --version)"
-    else
-        echo "✗ AWS CLI installation failed. Trying pip install..."
-        pip install awscli
-        if command -v aws &> /dev/null; then
-            echo "✓ AWS CLI installed via pip: $(aws --version)"
-        else
-            echo "✗ Warning: AWS CLI installation failed. Backup scripts may not work."
-        fi
-    fi
-else
-    echo "✓ AWS CLI already installed: $(aws --version)"
-fi
-
-echo "=== Initializing bench and site (${SITE_NAME}) ==="
-
-# Ensure node in PATH for bench
-export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
-
-# Initialize bench directory if it does not exist (non-destructive)
-BENCH_DIR="/home/frappe/frappe-bench"
-cd /home/frappe
-
-# Check if bench exists but is broken (missing apps.txt or incomplete)
-if [ -d "$BENCH_DIR" ] && [ ! -f "$BENCH_DIR/apps.txt" ]; then
-    echo "Detected broken bench installation (missing apps.txt), cleaning up..."
-    rm -rf "$BENCH_DIR"
-fi
-
-if [ ! -d "$BENCH_DIR" ]; then
-    echo "Creating bench at ${BENCH_DIR}"
-    # Ensure we use the upgraded Python version for bench init
-    if command -v pyenv &> /dev/null; then
-        export PATH="$(pyenv root)/shims:$PATH"
-        eval "$(pyenv init -)" 2>/dev/null || true
-    fi
-    # Use python3 explicitly to ensure we use the upgraded version
-    PYTHON_CMD=$(which python3)
-    echo "Using Python: $PYTHON_CMD ($($PYTHON_CMD --version))"
-    
-    # Pin Frappe to a stable branch
-    FRAPPE_BRANCH="${FRAPPE_BRANCH:-version-14}"
-    echo "Using Frappe branch: $FRAPPE_BRANCH"
-    
-    # Initialize bench with specific Frappe branch
-    bench init --skip-redis-config-generation --frappe-branch "$FRAPPE_BRANCH" --python "$PYTHON_CMD" frappe-bench || \
-    bench init --skip-redis-config-generation --frappe-branch "$FRAPPE_BRANCH" frappe-bench || \
-    bench init --skip-redis-config-generation --python "$PYTHON_CMD" frappe-bench || \
-    bench init --skip-redis-config-generation frappe-bench
-fi
-cd "$BENCH_DIR"
-
-# Check if virtual environment uses Python 3.12+ (incompatible with hiredis==2.0.0)
-# If so, recreate it with Python 3.11
-if [ -d "$BENCH_DIR/env" ]; then
-    VENV_PYTHON="$BENCH_DIR/env/bin/python"
-    if [ -f "$VENV_PYTHON" ]; then
-        VENV_VERSION=$("$VENV_PYTHON" --version 2>&1 | grep -oP '\d+\.\d+' | head -1 || echo "0.0")
-        
-        # Check if venv uses Python 3.12+ (which removed 'imp' module needed by hiredis==2.0.0)
-        if [ "$(printf '%s\n' "3.12" "$VENV_VERSION" | sort -V | head -n1)" = "3.12" ]; then
-            echo "Virtual environment uses Python $VENV_VERSION, which is incompatible with hiredis==2.0.0"
-            echo "Recreating virtual environment with Python 3.11..."
-            
-            # Get Python 3.11 from pyenv if available
-            if command -v pyenv &> /dev/null; then
-                export PATH="$(pyenv root)/shims:$PATH"
-                eval "$(pyenv init -)" 2>/dev/null || true
-                # Install Python 3.11 if not available
-                if ! pyenv versions --bare 2>/dev/null | grep -q "^3\.11\."; then
-                    echo "Installing Python 3.11.9 (latest 3.11.x) for compatibility..."
-                    pyenv install -s 3.11.9 2>/dev/null || pyenv install -s 3.11.8 2>/dev/null || pyenv install -s 3.11.0 2>/dev/null || true
-                fi
-                # Use latest 3.11.x available
-                PY311_VERSION=$(pyenv versions --bare 2>/dev/null | grep "^3\.11\." | sort -V | tail -1)
-                if [ -n "$PY311_VERSION" ]; then
-                    PYTHON311_CMD="$(pyenv root)/versions/$PY311_VERSION/bin/python3"
-                    if [ -f "$PYTHON311_CMD" ]; then
-                        echo "Recreating venv with Python $PY311_VERSION..."
-                        rm -rf "$BENCH_DIR/env"
-                        "$PYTHON311_CMD" -m venv "$BENCH_DIR/env"
-                        "$BENCH_DIR/env/bin/python" -m pip install --quiet --upgrade pip wheel
-                        echo "✓ Virtual environment recreated with Python $PY311_VERSION"
-                    fi
-                fi
-            else
-                # Fallback: try system Python 3.11 if available
-                if command -v python3.11 &> /dev/null; then
-                    echo "Recreating venv with system Python 3.11..."
-                    rm -rf "$BENCH_DIR/env"
-                    python3.11 -m venv "$BENCH_DIR/env"
-                    "$BENCH_DIR/env/bin/python" -m pip install --quiet --upgrade pip wheel
-                    echo "✓ Virtual environment recreated with Python 3.11"
-                else
-                    echo "⚠ Warning: Python 3.11 not found. Frappe installation may fail due to hiredis compatibility."
-                fi
-            fi
-        fi
+        echo "✓ AWS CLI already installed: $(aws --version)"
     fi
 fi
 
-# Check if frappe is properly installed (handle case where bench exists but frappe installation failed)
-if [ -d "$BENCH_DIR/apps/frappe" ] && ! "$BENCH_DIR/env/bin/python" -c "import frappe" 2>/dev/null; then
-    echo "Frappe directory exists but module not importable - reinstalling frappe..."
-    cd "$BENCH_DIR"
-    if command -v uv &> /dev/null; then
-        uv pip install --upgrade -e apps/frappe --python "$BENCH_DIR/env/bin/python" || true
-    else
-        "$BENCH_DIR/env/bin/pip" install --upgrade -e apps/frappe || true
-    fi
-    echo "✓ Attempted to reinstall frappe"
-fi
+# Step 3: Setup bench (directory structure, Frappe clone, venv)
+echo ""
+bash "$SCRIPTS_DIR/setup-bench.sh"
 
-# Basic ownership to avoid permission surprises
-chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
-chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
+# Step 4: Configure database and Redis
+echo ""
+bash "$SCRIPTS_DIR/setup-database-config.sh"
 
-# Database configuration (write to common_site_config before site exists)
-if [ -n "$DB_HOST_VALUE" ]; then
-    echo "Configuring external database: $DB_HOST_VALUE:$DB_PORT_VALUE"
-    bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
-    bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
-else
-    echo "Configuring local MariaDB container"
-    bench set-config --global db_host mariadb 2>/dev/null || true
-    bench set-config --global db_port 3306 2>/dev/null || true
-fi
+# Step 5: Get and setup apps (erpnext, hrms)
+echo ""
+bash "$SCRIPTS_DIR/setup-apps.sh"
 
-# Redis endpoints (global scope)
-bench set-config --global redis_cache redis://redis:6379 || true
-bench set-config --global redis_queue redis://redis:6379 || true
-bench set-config --global redis_socketio redis://redis:6379 || true
+# Step 6: Setup site (create site, initialize database)
+echo ""
+bash "$SCRIPTS_DIR/setup-site.sh"
 
-# Remove unused processes
-sed -i '/redis/d' ./Procfile 2>/dev/null || true
-sed -i '/watch/d' ./Procfile 2>/dev/null || true
-
-echo "=== Getting apps ==="
-# Frappe is already installed by bench init, but ensure it's on the correct branch
-if [ -d "$BENCH_DIR/apps/frappe" ]; then
-    cd "$BENCH_DIR/apps/frappe"
-    git fetch origin version-14 2>/dev/null || true
-    git checkout version-14 2>/dev/null || true
-    cd "$BENCH_DIR"
-fi
-
-# Get ERPNext and HRMS apps
-bench get-app erpnext --branch version-14 || echo "Warning: Failed to get erpnext app (may already exist)"
-bench get-app hrms --branch version-14 || echo "Warning: Failed to get hrms app (may already exist)"
-
-# Fix missing Node.js dependencies in frappe app (fast-glob issue)
-if [ -d "$BENCH_DIR/apps/frappe" ]; then
-    echo "Installing Node.js dependencies for frappe app..."
-    cd "$BENCH_DIR/apps/frappe"
-    if [ -f "package.json" ]; then
-        yarn install --check-files 2>/dev/null || npm install 2>/dev/null || echo "Warning: Failed to install frappe node dependencies"
-    fi
-    cd "$BENCH_DIR"
-fi
-
-echo "=== Preparing site: $SITE_NAME ==="
-
-# Helper: test database connection and permissions
-test_database_connection() {
-    if [ -z "$DB_HOST_VALUE" ] || [ -z "$DB_NAME_VALUE" ] || [ -z "$DB_USER_VALUE" ] || [ -z "$DB_PASSWORD_VALUE" ]; then
-        echo "Error: Missing database configuration (DB_HOST, DB_NAME, DB_USER, or DB_PASSWORD)"
-        return 1
-    fi
-
-    echo "Testing database connection to $DB_USER_VALUE@$DB_HOST_VALUE:$DB_PORT_VALUE/$DB_NAME_VALUE..."
-    
-    # Test basic connection
-    if ! mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
-        -e "SELECT 1;" 2>/dev/null; then
-        echo "✗ ERROR: Cannot connect to database. Please check:"
-        echo "  1. RDS security group allows connections from this EC2 instance"
-        echo "  2. Database user '$DB_USER_VALUE' has permission to connect from this host"
-        echo "  3. Database credentials are correct"
-        echo ""
-        echo "To fix this, run on RDS (as admin user):"
-        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'%' IDENTIFIED BY 'password';"
-        echo "  FLUSH PRIVILEGES;"
-        echo ""
-        echo "Or grant access from specific host:"
-        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'ec2-35-179-41-158.eu-west-2.compute.amazonaws.com' IDENTIFIED BY 'password';"
-        echo "  FLUSH PRIVILEGES;"
-        return 1
-    fi
-
-    # Check if database exists
-    DB_EXISTS=$(mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
-        -e "SHOW DATABASES LIKE '$DB_NAME_VALUE';" 2>/dev/null | grep -c "$DB_NAME_VALUE" || echo "0")
-    
-    if [ "$DB_EXISTS" = "0" ]; then
-        echo "✗ ERROR: Database '$DB_NAME_VALUE' does not exist."
-        echo ""
-        echo "Please create the database manually by running on your MySQL server:"
-        echo "  CREATE DATABASE \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'%';"
-        echo "  FLUSH PRIVILEGES;"
-        echo ""
-        echo "Or if you want to grant from a specific host:"
-        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'your-ec2-host';"
-        echo "  FLUSH PRIVILEGES;"
-        return 1
-    fi
-    
-    # Test database access
-    if ! mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
-        -D "$DB_NAME_VALUE" \
-        -e "SELECT 1;" 2>/dev/null; then
-        echo "✗ ERROR: Cannot access database '$DB_NAME_VALUE'. User may not have privileges."
-        echo "Please ensure user '$DB_USER_VALUE' has privileges on database '$DB_NAME_VALUE'"
-        echo ""
-        echo "Run on your MySQL server:"
-        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'%';"
-        echo "  FLUSH PRIVILEGES;"
-        return 1
-    fi
-
-    echo "✓ Database connection successful"
-    return 0
+# Step 7: Install HRMS app
+echo ""
+echo "=== Installing HRMS app ==="
+bash "$SCRIPTS_DIR/install-app-manual.sh" hrms || {
+    echo "Warning: HRMS app installation failed or already installed"
 }
 
-# Helper: detect whether the target RDS database already contains a Frappe schema.
-# We treat the presence of core tables (e.g. tabUser) as "site already exists".
-database_has_frappe_site() {
-    if [ -z "$DB_HOST_VALUE" ] || [ -z "$DB_NAME_VALUE" ]; then
-        return 1
-    fi
+# Step 8: Configure site (scheduler, developer mode, cache)
+echo ""
+bash "$SCRIPTS_DIR/configure-site.sh"
 
-    echo "Checking if RDS database '$DB_NAME_VALUE' already contains a Frappe site..."
-    if mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
-        -D "$DB_NAME_VALUE" \
-        -e "SHOW TABLES LIKE 'tabUser';" 2>/dev/null | grep -q "tabUser"; then
-        echo "Detected existing Frappe schema in RDS database '$DB_NAME_VALUE'."
-        return 0
-    fi
-
-    echo "No Frappe schema detected in RDS database '$DB_NAME_VALUE'."
-    return 1
-}
-
-# For external RDS databases, try to reuse existing site/DB if present,
-# otherwise create the site once (non-destructive on subsequent runs).
-if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
-    echo "Using external RDS database for site: $SITE_NAME"
-
-    # Test database connection before proceeding
-    if ! test_database_connection; then
-        echo "✗ FATAL: Database connection test failed. Cannot proceed with site setup."
-        echo "Please fix the database permissions and restart the container."
-        exit 1
-    fi
-
-    if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
-        echo "Existing RDS-backed site detected; running migrate without dropping database..."
-        bench --site "$SITE_NAME" migrate || true
-    else
-        echo "No existing site detected in bench; checking RDS database state..."
-
-        if database_has_frappe_site; then
-            echo "Attaching bench to existing RDS-backed site without reinitializing database..."
-
-            # Create site directory structure if missing
-            mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/logs"
-            mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/private"
-            mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
-
-            # Create/overwrite site_config.json with RDS credentials (force overwrite to ensure correct credentials)
-            cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
-{
- "db_name": "$DB_NAME_VALUE",
- "db_password": "$DB_PASSWORD_VALUE",
- "db_port": $DB_PORT_VALUE,
- "db_host": "$DB_HOST_VALUE",
- "db_type": "mariadb",
- "db_user": "$DB_USER_VALUE",
- "developer_mode": 1,
- "webserver_port": "443"
-}
-EOF
-
-            # Ensure global config matches RDS
-            bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
-            bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
-            bench set-config --global db_user "$DB_USER_VALUE" 2>/dev/null || true
-
-            # Only migrate the existing database; do NOT recreate or reinstall.
-            bench --site "$SITE_NAME" migrate || true
-        else
-            echo "Empty (or non-Frappe) database on RDS; creating site on RDS (one-time operation)..."
-
-            # Try bench new-site first (might work if RDS allows it for master user)
-            # Note: bench new-site uses --db-root-username for the database user, not --db-user
-            if bench new-site "$SITE_NAME" \
-                --db-host "$DB_HOST_VALUE" \
-                --db-port "$DB_PORT_VALUE" \
-                --db-root-username "$DB_USER_VALUE" \
-                --db-root-password "$DB_PASSWORD_VALUE" \
-                --db-name "$DB_NAME_VALUE" \
-                --db-user "$DB_USER_VALUE" \
-                --db-password "$DB_PASSWORD_VALUE" \
-                --db-type "mariadb" \
-                --admin-password "$ADMIN_PASSWORD_VALUE" \
-                --verbose \
-                --no-mariadb-socket 2>&1; then
-                echo "Site created successfully using bench new-site"
-            else
-                echo "bench new-site failed (likely CREATE USER restriction), creating site manually..."
-
-                # Create site directory structure
-                mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/logs"
-                mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/private"
-                mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
-
-                # Ensure target database exists (idempotent; requires privileges on RDS user)
-                if ! mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
-                    -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null; then
-                    echo "✗ WARNING: Could not create database '$DB_NAME_VALUE'. It may already exist or user lacks CREATE privilege."
-                    echo "Attempting to continue with existing database..."
-                else
-                    echo "✓ Database '$DB_NAME_VALUE' ready"
-                fi
-
-                # Create/overwrite site_config.json with RDS credentials (force overwrite to ensure correct credentials)
-                cat > "/home/frappe/frappe-bench/sites/$SITE_NAME/site_config.json" << EOF
-{
- "db_name": "$DB_NAME_VALUE",
- "db_password": "$DB_PASSWORD_VALUE",
- "db_port": $DB_PORT_VALUE,
- "db_host": "$DB_HOST_VALUE",
- "db_type": "mariadb",
- "db_user": "$DB_USER_VALUE",
- "developer_mode": 1,
- "webserver_port": "443"
-}
-EOF
-
-                # Set global config
-                bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
-                bench set-config --global db_port "$DB_PORT_VALUE" 2>/dev/null || true
-                bench set-config --global db_user "$DB_USER_VALUE" 2>/dev/null || true
-
-                # Initialize database schema using install-app frappe (no force, DB is known-empty)
-                echo "Initializing database schema..."
-                if ! bench --site "$SITE_NAME" install-app frappe 2>&1; then
-                    echo "✗ ERROR: install-app frappe failed"
-                    echo "This is likely due to database permission issues."
-                    echo "Please ensure the database user has proper permissions:"
-                    echo "  - SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX on database '$DB_NAME_VALUE'"
-                    echo "  - Permission to connect from this EC2 instance"
-                    echo ""
-                    echo "Trying migrate as fallback..."
-                    if ! bench --site "$SITE_NAME" migrate 2>&1; then
-                        echo "✗ ERROR: migrate also failed. Please check database permissions and restart."
-                        exit 1
-                    fi
-                fi
-            fi
-        fi
-    fi
-else
-    # Local MariaDB: reuse existing site if present, otherwise create it once.
-    if bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
-        echo "Existing local site detected; running migrate without dropping database..."
-        bench --site "$SITE_NAME" migrate || true
-    else
-        echo "No existing local site detected; creating new local site..."
-        bench new-site "$SITE_NAME" \
-            --force \
-            ${DB_NAME_VALUE:+--db-name "$DB_NAME_VALUE"} \
-            ${DB_HOST_VALUE:+--db-host "$DB_HOST_VALUE"} \
-            ${DB_PORT_VALUE:+--db-port "$DB_PORT_VALUE"} \
-            --mariadb-root-password "$DB_PASSWORD_VALUE" \
-            --mariadb-root-username "$DB_USER_VALUE" \
-            --admin-password "$ADMIN_PASSWORD_VALUE" \
-            --no-mariadb-socket
-    fi
-fi
-
-# Ensure the site knows its public URL so generated links use the correct host
-if [ -n "$SITE_URL" ]; then
-    HOST_URL="${SITE_URL%/}"
-    # Default to https if no scheme provided
-    if [[ "$HOST_URL" != http*://* ]]; then
-        HOST_URL="https://${HOST_URL}"
-    fi
-    echo "=== Setting host_name to ${HOST_URL} ==="
-    bench --site "$SITE_NAME" set-config host_name "$HOST_URL"
-fi
-
-# Force webserver_port to 443 so generated links do not append :8000
-echo "=== Setting webserver_port to 443 ==="
-bench set-config --global webserver_port 443 || true
-bench --site "$SITE_NAME" set-config webserver_port 443
-
-echo "=== Installing HRMS app (idempotent) ==="
-if ! bench --site "$SITE_NAME" install-app hrms 2>&1; then
-    echo "✗ WARNING: install-app hrms failed. This may be due to database permission issues."
-    echo "The app may already be installed, or there may be permission problems."
-    echo "Continuing with other operations..."
-fi
-bench --site "$SITE_NAME" set-config developer_mode 1 || true
-if ! bench --site "$SITE_NAME" enable-scheduler 2>&1; then
-    echo "✗ WARNING: enable-scheduler failed. This may be due to database permission issues."
-    echo "Continuing with other operations..."
-fi
-
-bench --site "$SITE_NAME" clear-cache || true
-bench use "$SITE_NAME" || true
-
+# Step 9: Install bucket helper scripts
+echo ""
 echo "=== Installing bucket helper scripts ==="
+if [ -f "$INIT_DIR/bucket-env.sh" ]; then
+    cp "$INIT_DIR/bucket-env.sh" "/home/frappe/bucket-env.sh"
+    cp "$INIT_DIR/push-to-bucket.sh" "/home/frappe/push-to-bucket.sh"
+    cp "$INIT_DIR/fetch-from-bucket.sh" "/home/frappe/fetch-from-bucket.sh"
+    cp "$INIT_DIR/create-push-cron-job.sh" "/home/frappe/create-push-cron-job.sh"
+    chmod +x /home/frappe/push-to-bucket.sh /home/frappe/fetch-from-bucket.sh /home/frappe/create-push-cron-job.sh 2>/dev/null || true
+    chown frappe:frappe /home/frappe/push-to-bucket.sh /home/frappe/fetch-from-bucket.sh /home/frappe/create-push-cron-job.sh /home/frappe/bucket-env.sh 2>/dev/null || true
+    echo "✓ Bucket helper scripts installed"
+fi
 
-# Determine the directory where this init.sh lives (inside the container image)
-INIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# In this deployment, helper scripts live next to init.sh (in /workspace)
-SCRIPTS_DIR="${INIT_DIR}"
-
-echo "Using scripts from: ${SCRIPTS_DIR}"
-
-# Copy S3 helper scripts into /home/frappe so they are easy to run
-cp "${SCRIPTS_DIR}/bucket-env.sh" "/home/frappe/bucket-env.sh"
-cp "${SCRIPTS_DIR}/push-to-bucket.sh" "/home/frappe/push-to-bucket.sh"
-cp "${SCRIPTS_DIR}/fetch-from-bucket.sh" "/home/frappe/fetch-from-bucket.sh"
-cp "${SCRIPTS_DIR}/create-push-cron-job.sh" "/home/frappe/create-push-cron-job.sh"
-
-chmod +x /home/frappe/push-to-bucket.sh /home/frappe/fetch-from-bucket.sh /home/frappe/create-push-cron-job.sh 2>/dev/null || true
-chown frappe:frappe /home/frappe/push-to-bucket.sh /home/frappe/fetch-from-bucket.sh /home/frappe/create-push-cron-job.sh /home/frappe/bucket-env.sh 2>/dev/null || true
-
-echo "=== Running initial fetch-from-bucket to populate site files (if any) ==="
+# Step 10: Run initial fetch-from-bucket
+echo ""
+echo "=== Running initial fetch-from-bucket ==="
 /home/frappe/fetch-from-bucket.sh || echo "Warning: initial fetch-from-bucket.sh failed (bucket may be empty or AWS not configured)"
 
-echo "=== Configuring cron job for periodic push-to-bucket backups ==="
+# Step 11: Configure cron job for backups
+echo ""
+echo "=== Configuring cron job for periodic backups ==="
 /home/frappe/create-push-cron-job.sh || echo "Warning: create-push-cron-job.sh failed; automatic backups may not run"
 
-echo "=== Starting bench ==="
-bench start
+# Step 12: Start bench
+echo ""
+echo "=========================================="
+echo "Starting bench processes..."
+echo "=========================================="
+bash "$SCRIPTS_DIR/start-bench.sh"
+
