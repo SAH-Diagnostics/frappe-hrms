@@ -105,7 +105,7 @@ frappe.db.commit()
             echo "Site directory exists but database is empty; initializing..."
             # Initialize database schema
             export FRAPPE_SITE="$SITE_NAME"
-            if ! "$BENCH_DIR/env/bin/python" << PYTHON_SCRIPT
+            "$BENCH_DIR/env/bin/python" <<- PYTHON_SCRIPT
 import frappe
 import sys
 
@@ -129,7 +129,7 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 PYTHON_SCRIPT
-            then
+            if [ $? -ne 0 ]; then
                 echo "Error initializing database schema"
                 exit 1
             fi
@@ -197,7 +197,7 @@ EOF
             # Initialize database schema using Frappe Python API
             echo "Initializing database schema..."
             export FRAPPE_SITE="$SITE_NAME"
-            if ! "$BENCH_DIR/env/bin/python" << PYTHON_SCRIPT
+            "$BENCH_DIR/env/bin/python" <<- PYTHON_SCRIPT
 import frappe
 import sys
 
@@ -229,7 +229,7 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 PYTHON_SCRIPT
-            then
+            if [ $? -ne 0 ]; then
                 echo "✗ ERROR: Database initialization failed"
                 exit 1
             fi
@@ -259,7 +259,7 @@ EOF
         
         # Initialize database schema
         export FRAPPE_SITE="$SITE_NAME"
-        if ! "$BENCH_DIR/env/bin/python" << PYTHON_SCRIPT
+        "$BENCH_DIR/env/bin/python" <<- PYTHON_SCRIPT
 import frappe
 import sys
 
@@ -285,7 +285,7 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 PYTHON_SCRIPT
-        then
+        if [ $? -ne 0 ]; then
             echo "✗ ERROR: Local site initialization failed"
             exit 1
         fi
