@@ -214,6 +214,16 @@ fi
 bench get-app erpnext --branch version-14 || echo "Warning: Failed to get erpnext app (may already exist)"
 bench get-app hrms --branch version-14 || echo "Warning: Failed to get hrms app (may already exist)"
 
+# Fix missing Node.js dependencies in frappe app (fast-glob issue)
+if [ -d "$BENCH_DIR/apps/frappe" ]; then
+    echo "Installing Node.js dependencies for frappe app..."
+    cd "$BENCH_DIR/apps/frappe"
+    if [ -f "package.json" ]; then
+        yarn install --check-files 2>/dev/null || npm install 2>/dev/null || echo "Warning: Failed to install frappe node dependencies"
+    fi
+    cd "$BENCH_DIR"
+fi
+
 echo "=== Preparing site: $SITE_NAME ==="
 
 # Helper: test database connection and permissions
@@ -243,12 +253,34 @@ test_database_connection() {
         return 1
     fi
 
+    # Check if database exists
+    DB_EXISTS=$(mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+        -e "SHOW DATABASES LIKE '$DB_NAME_VALUE';" 2>/dev/null | grep -c "$DB_NAME_VALUE" || echo "0")
+    
+    if [ "$DB_EXISTS" = "0" ]; then
+        echo "✗ ERROR: Database '$DB_NAME_VALUE' does not exist."
+        echo ""
+        echo "Please create the database manually by running on your MySQL server:"
+        echo "  CREATE DATABASE \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'%';"
+        echo "  FLUSH PRIVILEGES;"
+        echo ""
+        echo "Or if you want to grant from a specific host:"
+        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'your-ec2-host';"
+        echo "  FLUSH PRIVILEGES;"
+        return 1
+    fi
+    
     # Test database access
     if ! mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
         -D "$DB_NAME_VALUE" \
         -e "SELECT 1;" 2>/dev/null; then
         echo "✗ ERROR: Cannot access database '$DB_NAME_VALUE'. User may not have privileges."
         echo "Please ensure user '$DB_USER_VALUE' has privileges on database '$DB_NAME_VALUE'"
+        echo ""
+        echo "Run on your MySQL server:"
+        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'%';"
+        echo "  FLUSH PRIVILEGES;"
         return 1
     fi
 
