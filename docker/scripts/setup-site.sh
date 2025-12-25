@@ -52,6 +52,14 @@ test_database_connection() {
         -D "$DB_NAME_VALUE" \
         -e "SELECT 1;" 2>/dev/null; then
         echo "✗ ERROR: Cannot access database '$DB_NAME_VALUE'. User may not have privileges."
+        echo ""
+        echo "To fix this, connect to your MySQL/MariaDB server as an administrator and run:"
+        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'%';"
+        echo "  FLUSH PRIVILEGES;"
+        echo ""
+        echo "Or if you need to grant from a specific host:"
+        echo "  GRANT ALL PRIVILEGES ON \`$DB_NAME_VALUE\`.* TO '$DB_USER_VALUE'@'your-host-ip';"
+        echo "  FLUSH PRIVILEGES;"
         return 1
     fi
 
