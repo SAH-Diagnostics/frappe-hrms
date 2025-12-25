@@ -29,7 +29,7 @@ with open(site_config, 'w') as f:
 # Enable scheduler by updating database
 echo "Enabling scheduler..."
 export FRAPPE_SITE="$SITE_NAME"
-"$BENCH_DIR/env/bin/python" << PYTHON_SCRIPT
+"$BENCH_DIR/env/bin/python" << PYTHON_SCRIPT || true
 import frappe
 import sys
 
@@ -57,11 +57,9 @@ except Exception as e:
     except:
         print("⚠ Could not enable scheduler - continuing anyway")
 PYTHON_SCRIPT
-|| true
 
 # Clear cache
 echo "Clearing cache..."
 clear_cache "$SITE_NAME" || true
 
 echo "✓ Site configuration complete"
-

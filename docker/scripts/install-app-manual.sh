@@ -30,7 +30,7 @@ fi
 
 # Install app using Frappe Python API
 export FRAPPE_SITE="$SITE_NAME"
-"$BENCH_DIR/env/bin/python" << PYTHON_SCRIPT
+if ! "$BENCH_DIR/env/bin/python" << PYTHON_SCRIPT
 import frappe
 import sys
 
@@ -57,10 +57,9 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 PYTHON_SCRIPT
-|| {
+then
     echo "✗ WARNING: install-app $APP_NAME failed. The app may already be installed, or there may be permission problems."
     exit 1
-}
+fi
 
 echo "✓ App installation complete"
-
