@@ -108,7 +108,7 @@ All scripts use these environment variables (with defaults):
 - `SITE_NAME` - Site name (default: `hrms.localhost`)
 - `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` - Database config
 - `ADMIN_PASSWORD` - Admin user password
-- `FRAPPE_BRANCH` - Frappe branch (default: `version-14`)
+- `FRAPPE_BRANCH` - Frappe branch (default: `develop` - latest)
 - `SITE_URL` - Public site URL
 
 ## Notes

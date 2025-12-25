@@ -4,17 +4,19 @@
 set -e
 
 BENCH_DIR="${BENCH_DIR:-/home/frappe/frappe-bench}"
-FRAPPE_BRANCH="${FRAPPE_BRANCH:-version-14}"
+FRAPPE_BRANCH="${FRAPPE_BRANCH:-develop}"
 
 echo "=== Getting apps ==="
 
 cd "$BENCH_DIR"
 
-# Ensure Frappe is on the correct branch
+# Ensure Frappe is on the latest branch
 if [ -d "$BENCH_DIR/apps/frappe" ]; then
     cd "$BENCH_DIR/apps/frappe"
-    git fetch origin "$FRAPPE_BRANCH" 2>/dev/null || true
-    git checkout "$FRAPPE_BRANCH" 2>/dev/null || true
+    git fetch origin 2>/dev/null || true
+    git checkout "$FRAPPE_BRANCH" 2>/dev/null || \
+    git checkout develop 2>/dev/null || \
+    git checkout main 2>/dev/null || true
     cd "$BENCH_DIR"
 fi
 
@@ -23,7 +25,11 @@ if [ ! -d "$BENCH_DIR/apps/erpnext" ]; then
     echo "Cloning ERPNext (branch: $FRAPPE_BRANCH)..."
     git clone --branch "$FRAPPE_BRANCH" --depth 1 \
         https://github.com/frappe/erpnext.git "$BENCH_DIR/apps/erpnext" || {
-        echo "Warning: Failed to get erpnext app (may already exist)"
+        echo "Failed to clone $FRAPPE_BRANCH, trying develop..."
+        git clone --branch develop --depth 1 \
+            https://github.com/frappe/erpnext.git "$BENCH_DIR/apps/erpnext" || {
+            echo "Warning: Failed to get erpnext app (may already exist)"
+        }
     }
     
     if [ -d "$BENCH_DIR/apps/erpnext" ]; then
@@ -44,7 +50,11 @@ if [ ! -d "$BENCH_DIR/apps/hrms" ]; then
     echo "Cloning HRMS (branch: $FRAPPE_BRANCH)..."
     git clone --branch "$FRAPPE_BRANCH" --depth 1 \
         https://github.com/frappe/hrms.git "$BENCH_DIR/apps/hrms" || {
-        echo "Warning: Failed to get hrms app (may already exist)"
+        echo "Failed to clone $FRAPPE_BRANCH, trying develop..."
+        git clone --branch develop --depth 1 \
+            https://github.com/frappe/hrms.git "$BENCH_DIR/apps/hrms" || {
+            echo "Warning: Failed to get hrms app (may already exist)"
+        }
     }
     
     if [ -d "$BENCH_DIR/apps/hrms" ]; then
