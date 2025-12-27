@@ -41,6 +41,8 @@ frappe.init(site=site)
 frappe.connect()
 
 try:
+    from frappe.installer import install_app
+    
     # Check if app is already installed
     installed_apps = frappe.get_installed_apps()
     if app_name in installed_apps:
@@ -48,7 +50,7 @@ try:
     else:
         # Install the app
         print(f"Installing app '{app_name}'...")
-        frappe.installer.install_app(app_name)
+        install_app(app_name)
         frappe.db.commit()
         print(f"✓ App '{app_name}' installed successfully")
 except Exception as e:

@@ -191,12 +191,14 @@ frappe.connect()
 
 # Install Frappe app (creates database schema)
 try:
-    frappe.installer.install_db(
+    from frappe.installer import install_db, install_app
+    
+    install_db(
         db_name=frappe.conf.db_name,
         db_user=frappe.conf.db_user,
         db_password=frappe.conf.db_password
     )
-    frappe.installer.install_app('frappe')
+    install_app('frappe')
     frappe.db.commit()
     print("✓ Database schema initialized")
 except Exception as e:
@@ -335,15 +337,18 @@ frappe.init(site=site, sites_path=sites_path)
 frappe.connect()
 
 try:
+    # Import installer functions
+    from frappe.installer import install_db, install_app
+    
     # Install database
-    frappe.installer.install_db(
+    install_db(
         db_name=frappe.conf.db_name,
         db_user=frappe.conf.db_user,
         db_password=frappe.conf.db_password
     )
     
     # Install Frappe app
-    frappe.installer.install_app('frappe')
+    install_app('frappe')
     
     # Set admin password
     frappe.utils.user.set_system_user_password(admin_password)
@@ -418,12 +423,14 @@ frappe.init(site=site, sites_path='$BENCH_DIR/sites')
 frappe.connect()
 
 try:
-    frappe.installer.install_db(
+    from frappe.installer import install_db, install_app
+    
+    install_db(
         db_name=frappe.conf.db_name,
         db_user=frappe.conf.db_user,
         db_password=frappe.conf.db_password
     )
-    frappe.installer.install_app('frappe')
+    install_app('frappe')
     frappe.utils.user.set_system_user_password(admin_password)
     frappe.db.commit()
     print("✓ Local site initialized")
