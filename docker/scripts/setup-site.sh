@@ -200,41 +200,17 @@ try:
     if is_empty:
         print("Database is empty, creating initial schema...")
         # For empty databases, we need to create the schema first
-        from frappe.installer import install_db
-        import sys
-        from io import StringIO
-        
-        # Redirect stdin to avoid password prompt
-        old_stdin = sys.stdin
-        sys.stdin = StringIO('\n')  # Provide empty password
-        
+        # For external RDS databases, use setup_database directly with database user
         try:
-            # Try install_db with empty root password (for external databases)
-            install_db(
-                db_name=frappe.conf.db_name,
-                db_user=frappe.conf.db_user,
-                db_password=frappe.conf.db_password,
-                force=True,
-                verbose=False,
-                mariadb_user_host_login_scope='%'
-            )
+            from frappe.database.mariadb.setup_db import setup_database
+            
+            # Use setup_database directly - it should work with the configured database user
+            print("Setting up database schema using database user credentials...")
+            setup_database(force=True, verbose=False, mariadb_user_host_login_scope='%')
             print("✓ Database schema created")
-        except (EOFError, KeyboardInterrupt, SystemExit) as e:
-            # Expected error for external databases without root access
-            print(f"Note: install_db had password prompt issue: {e}")
-            print("Trying alternative approach...")
-            sys.stdin = old_stdin
-            from frappe.database import setup_database
-            try:
-                setup_database(force=True, verbose=False, mariadb_user_host_login_scope='%')
-            except Exception as setup_err:
-                print(f"Note: setup_database also failed: {setup_err}")
-        except Exception as db_err:
-            sys.stdin = old_stdin
-            print(f"Note: install_db had issues: {db_err}")
-        finally:
-            if 'old_stdin' in locals():
-                sys.stdin = old_stdin
+        except Exception as setup_err:
+            print(f"Note: setup_database failed: {setup_err}")
+            print("This is expected for external databases - will try install_app...")
     
     # Install Frappe app (creates tables and initial data)
     print("Installing Frappe app...")
@@ -376,61 +352,62 @@ os.makedirs('/home/frappe/logs', exist_ok=True)
 frappe.init(site=site, sites_path=sites_path)
 frappe.connect()
 
+# Ensure database connection is properly bound
+if not frappe.db:
+    raise RuntimeError("Database connection not established")
+
 try:
     # Import installer functions
     from frappe.installer import install_app
     
     # Check if database is empty (no tables)
-    tables = frappe.db.sql("SHOW TABLES", as_dict=False)
-    is_empty = len(tables) == 0
+    try:
+        tables = frappe.db.sql("SHOW TABLES", as_dict=False)
+        is_empty = len(tables) == 0
+    except Exception as check_err:
+        # If we can't check tables, assume database is empty
+        print(f"Note: Could not check tables: {check_err}")
+        is_empty = True
     
     if is_empty:
         print("Database is empty, creating initial schema...")
-        # For empty databases, we need to create the schema first
-        # For external RDS databases, we'll use install_db but provide empty root password
-        # The database user should have sufficient privileges to create tables
-        from frappe.installer import install_db
-        import sys
-        from io import StringIO
-        
-        # Redirect stdin to avoid password prompt
-        old_stdin = sys.stdin
-        sys.stdin = StringIO('\n')  # Provide empty password
-        
+        # For external RDS databases, we need to create the minimal schema manually
+        # since install_db requires root access which we don't have
+        # Create the essential tables that install_app needs to query
+        print("Creating minimal database schema...")
         try:
-            # Try install_db with empty root password (for external databases)
-            # The database user credentials will be used instead
-            install_db(
-                db_name=frappe.conf.db_name,
-                db_user=frappe.conf.db_user,
-                db_password=frappe.conf.db_password,
-                force=True,
-                verbose=False,
-                mariadb_user_host_login_scope='%'
-            )
-            print("✓ Database schema created")
-        except (EOFError, KeyboardInterrupt, SystemExit) as e:
-            # Expected error for external databases without root access
-            print(f"Note: install_db had password prompt issue: {e}")
-            print("Trying alternative approach...")
-            # Restore stdin
-            sys.stdin = old_stdin
-            # Try to create schema using database migrations directly
-            from frappe.database import setup_database
-            try:
-                setup_database(force=True, verbose=False, mariadb_user_host_login_scope='%')
-            except Exception as setup_err:
-                print(f"Note: setup_database also failed: {setup_err}")
-                print("Will attempt install_app which may create schema...")
-        except Exception as db_err:
-            # Restore stdin
-            sys.stdin = old_stdin
-            print(f"Note: install_db had issues: {db_err}")
-            print("Continuing with install_app...")
-        finally:
-            # Always restore stdin
-            if 'old_stdin' in locals():
-                sys.stdin = old_stdin
+            # Create tabDefaultValue table (needed by install_app)
+            frappe.db.sql("""
+                CREATE TABLE IF NOT EXISTS `tabDefaultValue` (
+                    `name` varchar(140) PRIMARY KEY,
+                    `defkey` varchar(140),
+                    `defvalue` text,
+                    `parent` varchar(140),
+                    `parentfield` varchar(140),
+                    `parenttype` varchar(140),
+                    `creation` datetime(6),
+                    `modified` datetime(6),
+                    `modified_by` varchar(140),
+                    `owner` varchar(140),
+                    INDEX `parent` (`parent`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+            
+            # Create tabSingles table (needed for global values)
+            frappe.db.sql("""
+                CREATE TABLE IF NOT EXISTS `tabSingles` (
+                    `doctype` varchar(140),
+                    `field` varchar(140),
+                    `value` text,
+                    PRIMARY KEY (`doctype`, `field`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+            
+            frappe.db.commit()
+            print("✓ Minimal schema created")
+        except Exception as schema_err:
+            print(f"Note: Could not create minimal schema: {schema_err}")
+            print("Will try install_app which should create full schema...")
     
     # Install Frappe app (creates tables and initial data)
     print("Installing Frappe app...")
