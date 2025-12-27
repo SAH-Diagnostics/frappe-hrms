@@ -31,6 +31,10 @@ if [ ! -f "$BENCH_DIR/sites/apps.txt" ]; then
     } > "$BENCH_DIR/sites/apps.txt"
 fi
 
+# Ensure logs directory exists (required by Frappe logger)
+mkdir -p "$BENCH_DIR/logs"
+mkdir -p "/home/frappe/logs" 2>/dev/null || true
+
 # Helper: test database connection and permissions
 test_database_connection() {
     if [ -z "$DB_HOST_VALUE" ] || [ -z "$DB_NAME_VALUE" ] || [ -z "$DB_USER_VALUE" ] || [ -z "$DB_PASSWORD_VALUE" ]; then
@@ -135,6 +139,9 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
         
         if database_has_frappe_site; then
             echo "Site exists with database schema; running migrations..."
+            # Ensure logs directories exist
+            mkdir -p "$BENCH_DIR/logs"
+            mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
             # Run migrations using Frappe Python API
             export FRAPPE_SITE="$SITE_NAME"
             cd "$BENCH_DIR"
@@ -142,6 +149,9 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
 import frappe
 import os
 os.chdir('$BENCH_DIR')
+os.makedirs('$BENCH_DIR/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
+os.makedirs('/home/frappe/logs', exist_ok=True)
 frappe.init(site='$SITE_NAME', sites_path='$BENCH_DIR/sites')
 frappe.connect()
 frappe.db.commit()
@@ -157,6 +167,9 @@ frappe.db.commit()
                     [ -d "$BENCH_DIR/apps/hrms" ] && echo "hrms"
                 } > "$BENCH_DIR/sites/apps.txt"
             fi
+            # Ensure logs directories exist
+            mkdir -p "$BENCH_DIR/logs"
+            mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
             # Initialize database schema
             export FRAPPE_SITE="$SITE_NAME"
             cd "$BENCH_DIR"
@@ -167,6 +180,9 @@ import os
 
 site = '$SITE_NAME'
 os.chdir('$BENCH_DIR')
+os.makedirs('$BENCH_DIR/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
+os.makedirs('/home/frappe/logs', exist_ok=True)
 frappe.init(site=site, sites_path='$BENCH_DIR/sites')
 frappe.connect()
 
@@ -224,6 +240,9 @@ EOF
                 } > "$BENCH_DIR/sites/apps.txt"
             fi
 
+            # Ensure logs directories exist
+            mkdir -p "$BENCH_DIR/logs"
+            mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
             # Run migrations
             export FRAPPE_SITE="$SITE_NAME"
             cd "$BENCH_DIR"
@@ -231,6 +250,9 @@ EOF
 import frappe
 import os
 os.chdir('$BENCH_DIR')
+os.makedirs('$BENCH_DIR/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
+os.makedirs('/home/frappe/logs', exist_ok=True)
 frappe.init(site='$SITE_NAME', sites_path='$BENCH_DIR/sites')
 frappe.connect()
 frappe.db.commit()
@@ -275,6 +297,11 @@ EOF
                 } > "$BENCH_DIR/sites/apps.txt"
             fi
 
+            # Ensure logs directories exist before Frappe initialization
+            mkdir -p "$BENCH_DIR/logs"
+            mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
+            mkdir -p "/home/frappe/logs" 2>/dev/null || true
+
             # Initialize database schema using Frappe Python API
             echo "Initializing database schema..."
             export FRAPPE_SITE="$SITE_NAME"
@@ -290,6 +317,11 @@ sites_path = '$BENCH_DIR/sites'
 
 # Ensure we're in the bench directory
 os.chdir('$BENCH_DIR')
+
+# Ensure logs directory exists
+os.makedirs('$BENCH_DIR/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
+os.makedirs('/home/frappe/logs', exist_ok=True)
 
 # Initialize Frappe with explicit sites path
 frappe.init(site=site, sites_path=sites_path)
@@ -355,6 +387,10 @@ EOF
             } > "$BENCH_DIR/sites/apps.txt"
         fi
         
+        # Ensure logs directories exist
+        mkdir -p "$BENCH_DIR/logs"
+        mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
+        
         # Initialize database schema
         export FRAPPE_SITE="$SITE_NAME"
         cd "$BENCH_DIR"
@@ -366,6 +402,8 @@ import os
 site = '$SITE_NAME'
 admin_password = '$ADMIN_PASSWORD_VALUE'
 os.chdir('$BENCH_DIR')
+os.makedirs('$BENCH_DIR/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
 
 frappe.init(site=site, sites_path='$BENCH_DIR/sites')
 frappe.connect()
@@ -392,12 +430,18 @@ PYTHON_SCRIPT
         fi
     else
         echo "Existing local site detected; running migrations..."
+        # Ensure logs directories exist
+        mkdir -p "$BENCH_DIR/logs"
+        mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
         export FRAPPE_SITE="$SITE_NAME"
         cd "$BENCH_DIR"
         "$BENCH_DIR/env/bin/python" -c "
 import frappe
 import os
 os.chdir('$BENCH_DIR')
+os.makedirs('$BENCH_DIR/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
+os.makedirs('/home/frappe/logs', exist_ok=True)
 frappe.init(site='$SITE_NAME', sites_path='$BENCH_DIR/sites')
 frappe.connect()
 frappe.db.commit()
