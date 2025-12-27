@@ -191,13 +191,11 @@ frappe.connect()
 
 # Install Frappe app (creates database schema)
 try:
-    from frappe.installer import install_db, install_app
+    from frappe.installer import install_app
     
-    install_db(
-        db_name=frappe.conf.db_name,
-        db_user=frappe.conf.db_user,
-        db_password=frappe.conf.db_password
-    )
+    # For external databases, we don't need install_db (it requires root password)
+    # Just install the app directly - it will create the schema in the existing database
+    print("Installing Frappe app (this will create database schema)...")
     install_app('frappe')
     frappe.db.commit()
     print("✓ Database schema initialized")
@@ -338,16 +336,11 @@ frappe.connect()
 
 try:
     # Import installer functions
-    from frappe.installer import install_db, install_app
+    from frappe.installer import install_app
     
-    # Install database
-    install_db(
-        db_name=frappe.conf.db_name,
-        db_user=frappe.conf.db_user,
-        db_password=frappe.conf.db_password
-    )
-    
-    # Install Frappe app
+    # For external databases, we don't need install_db (it requires root password)
+    # Just install the app directly - it will create the schema in the existing database
+    print("Installing Frappe app (this will create database schema)...")
     install_app('frappe')
     
     # Set admin password
