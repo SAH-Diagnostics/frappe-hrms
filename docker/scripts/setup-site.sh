@@ -191,11 +191,34 @@ frappe.connect()
 
 # Install Frappe app (creates database schema)
 try:
-    from frappe.installer import install_app
+    from frappe.installer import install_app, install_db
     
-    # For external databases, we don't need install_db (it requires root password)
-    # Just install the app directly - it will create the schema in the existing database
-    print("Installing Frappe app (this will create database schema)...")
+    # Check if database is empty (no tables)
+    tables = frappe.db.sql("SHOW TABLES", as_dict=False)
+    is_empty = len(tables) == 0
+    
+    if is_empty:
+        print("Database is empty, creating initial schema...")
+        # For empty databases, we need to create the schema first
+        try:
+            install_db(
+                db_name=frappe.conf.db_name,
+                db_user=frappe.conf.db_user,
+                db_password=frappe.conf.db_password,
+                force=True,
+                verbose=False,
+                mariadb_user_host_login_scope='%'
+            )
+        except (EOFError, KeyboardInterrupt) as e:
+            # Expected error for external databases without root access
+            print("Skipping install_db (not needed for external databases)...")
+        except Exception as db_err:
+            # Other errors - try to continue anyway
+            print(f"Note: install_db had issues: {db_err}")
+            print("Continuing with install_app...")
+    
+    # Install Frappe app (creates tables and initial data)
+    print("Installing Frappe app...")
     install_app('frappe')
     frappe.db.commit()
     print("✓ Database schema initialized")
@@ -338,9 +361,35 @@ try:
     # Import installer functions
     from frappe.installer import install_app
     
-    # For external databases, we don't need install_db (it requires root password)
-    # Just install the app directly - it will create the schema in the existing database
-    print("Installing Frappe app (this will create database schema)...")
+    # Check if database is empty (no tables)
+    tables = frappe.db.sql("SHOW TABLES", as_dict=False)
+    is_empty = len(tables) == 0
+    
+    if is_empty:
+        print("Database is empty, creating initial schema...")
+        # For empty databases, we need to create the schema first
+        # Use install_db but skip root password requirement for external databases
+        from frappe.installer import install_db
+        try:
+            # Try install_db - it may fail for root password, but that's OK for external DBs
+            install_db(
+                db_name=frappe.conf.db_name,
+                db_user=frappe.conf.db_user,
+                db_password=frappe.conf.db_password,
+                force=True,
+                verbose=False,
+                mariadb_user_host_login_scope='%'
+            )
+        except (EOFError, KeyboardInterrupt) as e:
+            # Expected error for external databases without root access
+            print("Skipping install_db (not needed for external databases)...")
+        except Exception as db_err:
+            # Other errors - try to continue anyway
+            print(f"Note: install_db had issues: {db_err}")
+            print("Continuing with install_app...")
+    
+    # Install Frappe app (creates tables and initial data)
+    print("Installing Frappe app...")
     install_app('frappe')
     
     # Set admin password
