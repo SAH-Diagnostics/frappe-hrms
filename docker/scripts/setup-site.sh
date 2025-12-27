@@ -33,6 +33,7 @@ fi
 
 # Ensure logs directory exists (required by Frappe logger)
 mkdir -p "$BENCH_DIR/logs"
+mkdir -p "$BENCH_DIR/$SITE_NAME/logs" 2>/dev/null || true  # Frappe may use this path
 mkdir -p "/home/frappe/logs" 2>/dev/null || true
 
 # Helper: test database connection and permissions
@@ -170,6 +171,7 @@ frappe.db.commit()
             # Ensure logs directories exist
             mkdir -p "$BENCH_DIR/logs"
             mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
+            mkdir -p "$BENCH_DIR/$SITE_NAME/logs"  # Frappe may use this path
             # Initialize database schema
             export FRAPPE_SITE="$SITE_NAME"
             cd "$BENCH_DIR"
@@ -182,6 +184,7 @@ site = '$SITE_NAME'
 os.chdir('$BENCH_DIR')
 os.makedirs('$BENCH_DIR/logs', exist_ok=True)
 os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/$SITE_NAME/logs', exist_ok=True)  # Alternative log path
 os.makedirs('/home/frappe/logs', exist_ok=True)
 frappe.init(site=site, sites_path='$BENCH_DIR/sites')
 frappe.connect()
@@ -243,6 +246,7 @@ EOF
             # Ensure logs directories exist
             mkdir -p "$BENCH_DIR/logs"
             mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
+            mkdir -p "$BENCH_DIR/$SITE_NAME/logs"  # Frappe may use this path
             # Run migrations
             export FRAPPE_SITE="$SITE_NAME"
             cd "$BENCH_DIR"
@@ -252,6 +256,7 @@ import os
 os.chdir('$BENCH_DIR')
 os.makedirs('$BENCH_DIR/logs', exist_ok=True)
 os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/$SITE_NAME/logs', exist_ok=True)  # Alternative log path
 os.makedirs('/home/frappe/logs', exist_ok=True)
 frappe.init(site='$SITE_NAME', sites_path='$BENCH_DIR/sites')
 frappe.connect()
@@ -300,6 +305,7 @@ EOF
             # Ensure logs directories exist before Frappe initialization
             mkdir -p "$BENCH_DIR/logs"
             mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
+            mkdir -p "$BENCH_DIR/$SITE_NAME/logs"  # Frappe may use this path for logs
             mkdir -p "/home/frappe/logs" 2>/dev/null || true
 
             # Initialize database schema using Frappe Python API
@@ -318,9 +324,10 @@ sites_path = '$BENCH_DIR/sites'
 # Ensure we're in the bench directory
 os.chdir('$BENCH_DIR')
 
-# Ensure logs directory exists
+# Ensure logs directory exists (Frappe may use different paths)
 os.makedirs('$BENCH_DIR/logs', exist_ok=True)
 os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/$SITE_NAME/logs', exist_ok=True)  # Alternative log path
 os.makedirs('/home/frappe/logs', exist_ok=True)
 
 # Initialize Frappe with explicit sites path
@@ -390,6 +397,7 @@ EOF
         # Ensure logs directories exist
         mkdir -p "$BENCH_DIR/logs"
         mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
+        mkdir -p "$BENCH_DIR/$SITE_NAME/logs"  # Frappe may use this path
         
         # Initialize database schema
         export FRAPPE_SITE="$SITE_NAME"
@@ -404,6 +412,7 @@ admin_password = '$ADMIN_PASSWORD_VALUE'
 os.chdir('$BENCH_DIR')
 os.makedirs('$BENCH_DIR/logs', exist_ok=True)
 os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/$SITE_NAME/logs', exist_ok=True)  # Alternative log path
 
 frappe.init(site=site, sites_path='$BENCH_DIR/sites')
 frappe.connect()
@@ -433,6 +442,7 @@ PYTHON_SCRIPT
         # Ensure logs directories exist
         mkdir -p "$BENCH_DIR/logs"
         mkdir -p "$BENCH_DIR/sites/$SITE_NAME/logs"
+        mkdir -p "$BENCH_DIR/$SITE_NAME/logs"  # Frappe may use this path
         export FRAPPE_SITE="$SITE_NAME"
         cd "$BENCH_DIR"
         "$BENCH_DIR/env/bin/python" -c "
@@ -441,6 +451,7 @@ import os
 os.chdir('$BENCH_DIR')
 os.makedirs('$BENCH_DIR/logs', exist_ok=True)
 os.makedirs('$BENCH_DIR/sites/$SITE_NAME/logs', exist_ok=True)
+os.makedirs('$BENCH_DIR/$SITE_NAME/logs', exist_ok=True)  # Alternative log path
 os.makedirs('/home/frappe/logs', exist_ok=True)
 frappe.init(site='$SITE_NAME', sites_path='$BENCH_DIR/sites')
 frappe.connect()
