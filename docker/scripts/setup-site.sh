@@ -21,6 +21,16 @@ cd "$BENCH_DIR"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/frappe-utils.sh" 2>/dev/null || true
 
+# Ensure apps.txt exists in sites directory (required by Frappe)
+if [ ! -f "$BENCH_DIR/sites/apps.txt" ]; then
+    echo "Creating apps.txt file..."
+    {
+        echo "frappe"
+        [ -d "$BENCH_DIR/apps/erpnext" ] && echo "erpnext"
+        [ -d "$BENCH_DIR/apps/hrms" ] && echo "hrms"
+    } > "$BENCH_DIR/sites/apps.txt"
+fi
+
 # Helper: test database connection and permissions
 test_database_connection() {
     if [ -z "$DB_HOST_VALUE" ] || [ -z "$DB_NAME_VALUE" ] || [ -z "$DB_USER_VALUE" ] || [ -z "$DB_PASSWORD_VALUE" ]; then
@@ -138,6 +148,15 @@ frappe.db.commit()
 " 2>/dev/null || true
         else
             echo "Site directory exists but database is empty; initializing..."
+            # Create apps.txt file in sites directory (required by Frappe)
+            if [ ! -f "$BENCH_DIR/sites/apps.txt" ]; then
+                echo "Creating apps.txt file..."
+                {
+                    echo "frappe"
+                    [ -d "$BENCH_DIR/apps/erpnext" ] && echo "erpnext"
+                    [ -d "$BENCH_DIR/apps/hrms" ] && echo "hrms"
+                } > "$BENCH_DIR/sites/apps.txt"
+            fi
             # Initialize database schema
             export FRAPPE_SITE="$SITE_NAME"
             cd "$BENCH_DIR"
@@ -195,6 +214,16 @@ PYTHON_SCRIPT
 }
 EOF
 
+            # Create apps.txt file in sites directory (required by Frappe)
+            if [ ! -f "$BENCH_DIR/sites/apps.txt" ]; then
+                echo "Creating apps.txt file..."
+                {
+                    echo "frappe"
+                    [ -d "$BENCH_DIR/apps/erpnext" ] && echo "erpnext"
+                    [ -d "$BENCH_DIR/apps/hrms" ] && echo "hrms"
+                } > "$BENCH_DIR/sites/apps.txt"
+            fi
+
             # Run migrations
             export FRAPPE_SITE="$SITE_NAME"
             cd "$BENCH_DIR"
@@ -234,6 +263,17 @@ frappe.db.commit()
  "webserver_port": 443
 }
 EOF
+
+            # Create apps.txt file in sites directory (required by Frappe)
+            # This file lists all apps available for sites
+            if [ ! -f "$BENCH_DIR/sites/apps.txt" ]; then
+                echo "Creating apps.txt file..."
+                {
+                    echo "frappe"
+                    [ -d "$BENCH_DIR/apps/erpnext" ] && echo "erpnext"
+                    [ -d "$BENCH_DIR/apps/hrms" ] && echo "hrms"
+                } > "$BENCH_DIR/sites/apps.txt"
+            fi
 
             # Initialize database schema using Frappe Python API
             echo "Initializing database schema..."
@@ -291,7 +331,7 @@ else
         # Create site directory structure
         mkdir -p "$BENCH_DIR/sites/$SITE_NAME"/{logs,private,public}
         
-        # Create site_config.json for local MariaDB
+            # Create site_config.json for local MariaDB
         cat > "$BENCH_DIR/sites/$SITE_NAME/site_config.json" << EOF
 {
  "db_name": "${DB_NAME_VALUE:-$SITE_NAME}",
@@ -304,6 +344,16 @@ else
  "webserver_port": 443
 }
 EOF
+        
+        # Create apps.txt file in sites directory (required by Frappe)
+        if [ ! -f "$BENCH_DIR/sites/apps.txt" ]; then
+            echo "Creating apps.txt file..."
+            {
+                echo "frappe"
+                [ -d "$BENCH_DIR/apps/erpnext" ] && echo "erpnext"
+                [ -d "$BENCH_DIR/apps/hrms" ] && echo "hrms"
+            } > "$BENCH_DIR/sites/apps.txt"
+        fi
         
         # Initialize database schema
         export FRAPPE_SITE="$SITE_NAME"
