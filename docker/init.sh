@@ -70,7 +70,7 @@ BENCH_DIR="/home/frappe/frappe-bench"
 cd /home/frappe
 if [ ! -d "$BENCH_DIR" ]; then
     echo "Creating bench at ${BENCH_DIR}"
-    bench init --skip-redis-config-generation frappe-bench
+    bench init --skip-redis-config-generation --frappe-branch version-15 frappe-bench
 fi
 cd "$BENCH_DIR"
 
@@ -99,8 +99,12 @@ sed -i '/redis/d' ./Procfile 2>/dev/null || true
 sed -i '/watch/d' ./Procfile 2>/dev/null || true
 
 echo "=== Getting apps ==="
-bench get-app erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
-bench get-app hrms || echo "Warning: Failed to get hrms app (may already exist)"
+bench get-app --branch version-15 erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
+bench get-app --branch version-16 hrms || echo "Warning: Failed to get hrms app (may already exist)"
+
+SAH_CRM_REPO="${SAH_CRM_REPO:-https://github.com/SAH-Diagnostics/sah_crm}"
+SAH_CRM_BRANCH="${SAH_CRM_BRANCH:-main}"
+bench get-app "$SAH_CRM_REPO" --branch "$SAH_CRM_BRANCH" || echo "Warning: Failed to get sah_crm app (may already exist)"
 
 echo "=== Preparing site: $SITE_NAME ==="
 
@@ -259,6 +263,9 @@ bench --site "$SITE_NAME" set-config webserver_port 443
 
 echo "=== Installing HRMS app (idempotent) ==="
 bench --site "$SITE_NAME" install-app hrms || true
+
+echo "=== Installing SAH CRM app (idempotent) ==="
+bench --site "$SITE_NAME" install-app sah_crm || true
 bench --site "$SITE_NAME" set-config developer_mode 1
 bench --site "$SITE_NAME" enable-scheduler
 
