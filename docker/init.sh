@@ -99,9 +99,9 @@ sed -i '/redis/d' ./Procfile 2>/dev/null || true
 sed -i '/watch/d' ./Procfile 2>/dev/null || true
 
 echo "=== Getting apps ==="
-ERPNEXT_BRANCH="${ERPNEXT_BRANCH:-version-15}"
-FRAPPE_BRANCH="${FRAPPE_BRANCH:-version-15}"
-HRMS_BRANCH="${HRMS_BRANCH:-version-15}"
+ERPNEXT_BRANCH="${ERPNEXT_BRANCH:-version-16}"
+FRAPPE_BRANCH="${FRAPPE_BRANCH:-version-16}"
+HRMS_BRANCH="${HRMS_BRANCH:-version-16}"
 bench get-app --branch "$ERPNEXT_BRANCH" erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
 bench get-app --branch "$HRMS_BRANCH" hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
