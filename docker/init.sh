@@ -102,6 +102,10 @@ echo "=== Getting apps ==="
 bench get-app erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
 bench get-app hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
+SAH_CRM_REPO="${SAH_CRM_REPO:-https://github.com/SAH-Diagnostics/sah_crm}"
+SAH_CRM_BRANCH="${SAH_CRM_BRANCH:-staging}"
+bench get-app "$SAH_CRM_REPO" --branch "$SAH_CRM_BRANCH" || echo "Warning: Failed to get sah_crm app (may already exist)"
+
 echo "=== Preparing site: $SITE_NAME ==="
 
 # Helper: detect whether the target RDS database already contains a Frappe schema.
@@ -259,6 +263,9 @@ bench --site "$SITE_NAME" set-config webserver_port 443
 
 echo "=== Installing HRMS app (idempotent) ==="
 bench --site "$SITE_NAME" install-app hrms || true
+
+echo "=== Installing SAH CRM app (idempotent) ==="
+bench --site "$SITE_NAME" install-app sah_crm || true
 bench --site "$SITE_NAME" set-config developer_mode 1
 bench --site "$SITE_NAME" enable-scheduler
 
