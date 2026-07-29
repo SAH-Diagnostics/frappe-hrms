@@ -70,7 +70,7 @@ BENCH_DIR="/home/frappe/frappe-bench"
 cd /home/frappe
 if [ ! -d "$BENCH_DIR" ]; then
     echo "Creating bench at ${BENCH_DIR}"
-    bench init --skip-redis-config-generation --frappe-branch version-15 frappe-bench
+    bench init --skip-redis-config-generation --frappe-branch version-16 frappe-bench
 fi
 cd "$BENCH_DIR"
 
@@ -99,7 +99,7 @@ sed -i '/redis/d' ./Procfile 2>/dev/null || true
 sed -i '/watch/d' ./Procfile 2>/dev/null || true
 
 echo "=== Getting apps ==="
-bench get-app --branch version-15 erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
+bench get-app --branch version-16 erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
 bench get-app --branch version-16 hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
 SAH_CRM_REPO="${SAH_CRM_REPO:-https://github.com/SAH-Diagnostics/sah_crm}"
