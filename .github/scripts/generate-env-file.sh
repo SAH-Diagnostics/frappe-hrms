@@ -43,6 +43,7 @@ REQUIRED_VARS=(
     "DATABASE_PASSWORD"
     "DATABASE_PORT"
     "DATABASE_USERNAME"
+    "ADMIN_PASSWORD"
     "SITE_NAME"
     "SITE_URL"
     "EXISTING_SITE"
@@ -73,8 +74,8 @@ for var in "${REQUIRED_VARS[@]}"; do
     value="${SECRETS_MAP[$var]}"
     
     if [ -z "$value" ]; then
-        echo "Warning: Variable $var is not set, using empty value"
-        value=""
+        echo "Error: Required variable $var is not set in $SECRETS_FILE — refusing to deploy with a missing secret" >&2
+        exit 1
     fi
     
     # Write to .env file
