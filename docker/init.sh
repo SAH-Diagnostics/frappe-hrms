@@ -5,9 +5,10 @@ set -e
 DB_HOST_VALUE="${DB_HOST:-${RDS_HOSTNAME:-}}"
 DB_PORT_VALUE="${DB_PORT:-${RDS_PORT:-3306}}"
 DB_USER_VALUE="${DB_USER:-${RDS_USERNAME:-root}}"
-DB_PASSWORD_VALUE="${DB_PASSWORD:-${RDS_PASSWORD:-123}}"
+DB_PASSWORD_VALUE="${DB_PASSWORD:-${RDS_PASSWORD:?DB_PASSWORD or RDS_PASSWORD must be set}}"
 DB_NAME_VALUE="${DB_NAME:-${RDS_DB_NAME:-}}"
-ADMIN_PASSWORD_VALUE="${ADMIN_PASSWORD:-admin}"
+ADMIN_PASSWORD_VALUE="${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}"
+DEVELOPER_MODE_VALUE="${DEVELOPER_MODE:-0}"
 SITE_NAME="${SITE_NAME:-hrms.localhost}"
 
 echo "=== Installing AWS CLI ==="
@@ -156,7 +157,7 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
  "db_host": "$DB_HOST_VALUE",
  "db_type": "mariadb",
  "db_user": "$DB_USER_VALUE",
- "developer_mode": 1,
+ "developer_mode": $DEVELOPER_MODE_VALUE,
  "webserver_port": "443"
 }
 EOF
@@ -207,7 +208,7 @@ EOF
  "db_host": "$DB_HOST_VALUE",
  "db_type": "mariadb",
  "db_user": "$DB_USER_VALUE",
- "developer_mode": 1,
+ "developer_mode": $DEVELOPER_MODE_VALUE,
  "webserver_port": "443"
 }
 EOF
@@ -266,7 +267,7 @@ bench --site "$SITE_NAME" install-app hrms || true
 
 echo "=== Installing SAH CRM app (idempotent) ==="
 bench --site "$SITE_NAME" install-app sah_crm || true
-bench --site "$SITE_NAME" set-config developer_mode 1
+bench --site "$SITE_NAME" set-config developer_mode "$DEVELOPER_MODE_VALUE"
 bench --site "$SITE_NAME" enable-scheduler
 
 bench --site "$SITE_NAME" clear-cache || true
