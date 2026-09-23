@@ -33,12 +33,16 @@
 #   - the RDS engine and its pending `system-update` maintenance actions
 #   - end-user devices, browsers and firmware
 #
-# REVIEWERS: `.github/CODEOWNERS` was scrubbed for this fork by VC-649 and now assigns both
-# `/.github/` and `/docker/` to @mohammad-dasseh and @alitamoor-dev, so a pull request raised here
-# requests a review that can actually arrive. That review is only ENFORCED once a ruleset on the
-# target branch enables "require code owner review" -- see `.github/DEPLOYMENT_CONTROLS.md`.
-# CODEOWNERS is not the same thing as the named owner of this process, which is still UNASSIGNED;
-# see section 0 of the process document referenced above.
+# REVIEWERS: `.github/CODEOWNERS` is still upstream Frappe's. It assigns paths to maintainers
+# outside this organisation and names nobody for `/.github/` or `/docker/`, so a Dependabot pull
+# request raised here requests a review that can never arrive.
+#
+# VC-649 did scrub it, and that work was reverted on 2026-09-23 (PR #14 reverting PR #10), so the
+# gap is open again -- it is stated here as current fact rather than as history, because the next
+# person to read this file needs to know what is true, not what was briefly true.
+#
+# CODEOWNERS is in any case not the same thing as the named owner of this process, which is still
+# UNASSIGNED; see section 0 of the process document referenced above.
 
 # ============================================================================================
 # THE PULL REQUESTS THIS FILE RAISES WILL TARGET `main`, AND A MERGE TO `main` DEPLOYS PRODUCTION
@@ -63,8 +67,9 @@
 #   GATE WITH REQUIRED REVIEWERS AND A `paths:` FILTER.
 #
 # Until then every Dependabot pull request here is a loaded production deploy awaiting a click.
-# The gate already exists on `staging` (the `environment: production` key in deploy-prod.yml);
-# it has not reached `main` -- verified against origin/main, which carries neither key -- and
+# The gate already exists on `staging` (the `environment: production` key in deploy-prod.yml,
+# added by the deploy-hardening work and unaffected by the VC-649 revert); it has not reached
+# `main` -- verified against origin/main, which carries neither key -- and
 # required reviewers have never been configured. Both are on the cutover runbook,
 # `helper/todos/erp-production-cutover-steps.md` (SAH-root helper/, not in this repository).
 # ============================================================================================
