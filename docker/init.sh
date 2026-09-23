@@ -9,6 +9,7 @@ DB_PASSWORD_VALUE="${DB_PASSWORD:-${RDS_PASSWORD:-123}}"
 DB_NAME_VALUE="${DB_NAME:-${RDS_DB_NAME:-}}"
 ADMIN_PASSWORD_VALUE="${ADMIN_PASSWORD:-admin}"
 SITE_NAME="${SITE_NAME:-hrms.localhost}"
+EXISTING_SITE_VALUE="${EXISTING_SITE:-false}"
 
 echo "=== Installing AWS CLI ==="
 # Install aws-cli if not already installed
@@ -111,24 +112,107 @@ bench get-app "$SAH_CRM_REPO" --branch "$SAH_CRM_BRANCH" || echo "Warning: Faile
 
 echo "=== Preparing site: $SITE_NAME ==="
 
-# Helper: detect whether the target RDS database already contains a Frappe schema.
-# We treat the presence of core tables (e.g. tabUser) as "site already exists".
+# Decide whether the target database already holds a Frappe site.
+#
+# This MUST fail closed. The caller below treats "no Frappe schema" as permission to run
+# `bench new-site`, which is destructive against a production database. If a connection
+# failure were allowed to look like an empty database, a transient fault -- notably the
+# MariaDB "Too many connections" condition behind the 24 Jun and 8 Sep 2026 outages
+# (VC-620) -- would route a redeploy straight into site re-creation over live data.
+#
+# Three properties are load-bearing; each replaced an earlier attempt that looked correct:
+#
+#   1. ONE connection decides. An earlier version probed reachability with a separate
+#      `SELECT 1` and then ran the real query through `... | grep -q`. Without
+#      `set -o pipefail` a pipeline reports grep's status, so the real query's failure was
+#      still invisible, and a pool flap between the two calls landed back in `bench
+#      new-site`. Status and output must come from the same call that makes the decision.
+#
+#   2. NO `-D`. Selecting the database up front makes a not-yet-created database raise
+#      ERROR 1049, which is indistinguishable from a connection fault -- that would abort
+#      legitimate first-time provisioning and, under `restart: unless-stopped`, crash-loop
+#      a brand-new environment forever. `SHOW TABLES FROM` asks the same question without
+#      requiring the database to exist.
+#
+#   3. `exit`, not `return`, on a fault. init.sh runs under `set -e`, but a non-zero return
+#      from a function used as an `if` condition is exempt from it, so `return 1` here
+#      would be silently swallowed -- which is exactly how the original bug read as safe.
 database_has_frappe_site() {
+    local probe_output
+    local probe_status=0
+
     if [ -z "$DB_HOST_VALUE" ] || [ -z "$DB_NAME_VALUE" ]; then
+        echo "FATAL: database_has_frappe_site called without DB_HOST and DB_NAME set." >&2
+        echo "Refusing to guess: answering 'no site' here would authorise bench new-site." >&2
+        exit 1
+    fi
+
+    echo "Checking whether database '$DB_NAME_VALUE' on '$DB_HOST_VALUE' holds a Frappe site..."
+
+    probe_output=$(mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" \
+        -p"$DB_PASSWORD_VALUE" \
+        -e "SHOW TABLES FROM \`$DB_NAME_VALUE\` LIKE 'tabUser';" 2>&1) || probe_status=$?
+
+    if [ "$probe_status" -eq 0 ]; then
+        case "$probe_output" in
+            *tabUser*)
+                echo "Detected an existing Frappe schema in '$DB_NAME_VALUE'."
+                return 0
+                ;;
+        esac
+        echo "Database '$DB_NAME_VALUE' exists and holds no Frappe schema; safe to provision."
         return 1
     fi
 
-    echo "Checking if RDS database '$DB_NAME_VALUE' already contains a Frappe site..."
-    if mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
-        -D "$DB_NAME_VALUE" \
-        -e "SHOW TABLES LIKE 'tabUser';" 2>/dev/null | grep -q "tabUser"; then
-        echo "Detected existing Frappe schema in RDS database '$DB_NAME_VALUE'."
-        return 0
-    fi
+    # A database that does not exist yet is a legitimate first-run state, not a fault.
+    case "$probe_output" in
+        *"ERROR 1049"*)
+            echo "Database '$DB_NAME_VALUE' does not exist yet; safe to provision."
+            return 1
+            ;;
+    esac
 
-    echo "No Frappe schema detected in RDS database '$DB_NAME_VALUE'."
-    return 1
+    echo "FATAL: cannot determine the state of database '$DB_NAME_VALUE' on '$DB_HOST_VALUE'." >&2
+    echo "Refusing to continue: an unreachable database must not be treated as an empty one," >&2
+    echo "because that would create a new site over existing production data." >&2
+    echo "mysql reported: $probe_output" >&2
+    exit 1
 }
+
+# Second, independent guard on site creation.
+#
+# database_has_frappe_site() *infers* whether a site exists. EXISTING_SITE is a *declaration*
+# from the environment's own configuration that one does. Where an operator has declared it,
+# no inference may authorise `bench new-site`: if the schema it declares cannot be found,
+# the fault is in the database or the configuration, never a reason to provision over it.
+#
+# The two guards fail independently, which is the point of having both. The probe covers a
+# database that cannot be reached. This covers one that is reached and answers wrongly --
+# a DB_NAME typo, an instance restored empty, a replica pointed at by mistake. In each of
+# those the probe honestly reports "no schema" and would, on its own, authorise creation.
+assert_provisioning_allowed() {
+    if [ "$EXISTING_SITE_VALUE" = "true" ]; then
+        echo "FATAL: EXISTING_SITE=true declares that site '$SITE_NAME' already exists," >&2
+        echo "but no Frappe schema was found in '$DB_NAME_VALUE' on '$DB_HOST_VALUE'." >&2
+        echo "Refusing to run bench new-site: creating a site here would write over the" >&2
+        echo "data this environment is declared to hold." >&2
+        echo "Investigate the database first. If this environment genuinely must be" >&2
+        echo "provisioned from empty, set EXISTING_SITE=false deliberately." >&2
+        exit 1
+    fi
+}
+
+# Fail fast on a half-configured external database. Without this, a deploy that sets
+# DB_HOST but loses DB_NAME falls through to the local-MariaDB branch below, which runs
+# `bench new-site --force` and still forwards --db-host -- provisioning an orphan schema
+# on the production RDS instance and bringing the ERP up empty. One orphan per container
+# recreate, which `restart: unless-stopped` makes considerably more likely.
+if { [ -n "$DB_HOST_VALUE" ] && [ -z "$DB_NAME_VALUE" ]; } || \
+   { [ -z "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; }; then
+    echo "FATAL: DB_HOST and DB_NAME must be set together (got host='$DB_HOST_VALUE', name='$DB_NAME_VALUE')." >&2
+    echo "Refusing to continue: a half-configured external database would be provisioned as a local one." >&2
+    exit 1
+fi
 
 # For external RDS databases, try to reuse existing site/DB if present,
 # otherwise create the site once (non-destructive on subsequent runs).
@@ -173,6 +257,7 @@ EOF
             bench --site "$SITE_NAME" migrate || true
         else
             echo "Empty (or non-Frappe) database on RDS; creating site on RDS (one-time operation)..."
+            assert_provisioning_allowed
 
             # Try bench new-site first (might work if RDS allows it for master user)
             if bench new-site "$SITE_NAME" \
@@ -236,6 +321,7 @@ else
         bench --site "$SITE_NAME" migrate || true
     else
         echo "No existing local site detected; creating new local site..."
+        assert_provisioning_allowed
         bench new-site "$SITE_NAME" \
             --force \
             ${DB_NAME_VALUE:+--db-name "$DB_NAME_VALUE"} \
