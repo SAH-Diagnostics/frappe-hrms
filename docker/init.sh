@@ -70,7 +70,7 @@ BENCH_DIR="/home/frappe/frappe-bench"
 cd /home/frappe
 if [ ! -d "$BENCH_DIR" ]; then
     echo "Creating bench at ${BENCH_DIR}"
-    bench init --skip-redis-config-generation frappe-bench
+    bench init --skip-redis-config-generation --frappe-branch version-16 frappe-bench
 fi
 cd "$BENCH_DIR"
 
@@ -99,13 +99,13 @@ sed -i '/redis/d' ./Procfile 2>/dev/null || true
 sed -i '/watch/d' ./Procfile 2>/dev/null || true
 
 echo "=== Getting apps ==="
-ERPNEXT_BRANCH="${ERPNEXT_BRANCH:-version-16}"
-FRAPPE_BRANCH="${FRAPPE_BRANCH:-version-16}"
-HRMS_BRANCH="${HRMS_BRANCH:-version-16}"
-bench get-app --branch "$ERPNEXT_BRANCH" erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
-bench get-app --branch "$HRMS_BRANCH" hrms || echo "Warning: Failed to get hrms app (may already exist)"
+bench get-app --branch version-16 erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
+bench get-app --branch version-16 hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
 SAH_CRM_REPO="${SAH_CRM_REPO:-https://github.com/SAH-Diagnostics/sah_crm}"
+# This branch targets `staging`. SAH_CRM_BRANCH is not passed into the container by
+# docker-compose.yml or generate-env-file.sh, so this literal is the only value that ever
+# applies -- it cannot be overridden from Secrets Manager today.
 SAH_CRM_BRANCH="${SAH_CRM_BRANCH:-staging}"
 bench get-app "$SAH_CRM_REPO" --branch "$SAH_CRM_BRANCH" || echo "Warning: Failed to get sah_crm app (may already exist)"
 
