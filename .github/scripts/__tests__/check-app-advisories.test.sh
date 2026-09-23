@@ -372,7 +372,12 @@ for badsla in abc "" -5 "14 days"; do
     if [ "$STATUS" -eq 2 ]; then ok "--sla-days '$badsla' is refused"; else bad "--sla-days '$badsla' exited $STATUS; the 14-day standard was silently disabled"; fi
 done
 
-OUT="$(ADVISORY_FIXTURE_DIR="$FIXTURES" GITHUB_ACTIONS=1 node "$SCRIPT" --init "$REAL_INIT" 2>&1)"; STATUS=$?
+# `env -u ALLOW_FIXTURES_IN_CI` is load-bearing. The workflow sets that variable for the whole
+# self-test step so this suite can replay fixtures at all, and a step-level env is inherited by
+# every child process -- including this one, whose entire point is to prove the guard still
+# refuses. Without the unset, the assertion below silently tests the opt-out instead of the
+# guard, and fails in CI while passing on a developer's machine.
+OUT="$(env -u ALLOW_FIXTURES_IN_CI ADVISORY_FIXTURE_DIR="$FIXTURES" GITHUB_ACTIONS=1 node "$SCRIPT" --init "$REAL_INIT" 2>&1)"; STATUS=$?
 if [ "$STATUS" -eq 2 ]; then
     ok "fixture mode is refused under GITHUB_ACTIONS -- a CI run cannot be a fixture replay"
 else
@@ -454,6 +459,55 @@ else
         ok "the job token is scoped to contents: read"
     else
         bad "no least-privilege permissions block; a security check should not hold write scope"
+    fi
+fi
+echo
+
+echo "T17: the CI fixture guard is opted out of for the self-test step ONLY"
+# Regression test for a bug this suite could not catch locally, because the guard it exercises
+# only fires when GITHUB_ACTIONS is set.
+#
+# check-app-advisories.mjs refuses ADVISORY_FIXTURE_DIR under GITHUB_ACTIONS, so a live check can
+# never be satisfied by canned data. That guard also caught THIS suite, whose whole job is to
+# replay fixtures -- so every fixture-backed assertion returned exit 2 in CI and 21 of them
+# failed, while all 51 passed locally.
+#
+# The fix is an opt-in on the self-test step alone. The danger in that fix is hoisting it: an
+# ALLOW_FIXTURES_IN_CI at job or workflow level would also disable the guard on "Check the pinned
+# versions", turning the live security check into a fixture replay that reports success forever.
+# That is the exact fail-open this workflow exists to prevent, so it is asserted, not trusted.
+if [ ! -f "$WF" ]; then
+    bad "workflow not found at $WF"
+else
+    if python3 - "$WF" <<'PYEOF'
+import sys, re
+lines = open(sys.argv[1]).read().splitlines()
+# A step-level env sits at 8 spaces of indent under a "- name:" at 6. Job/workflow level sits
+# at 0-6. Anything at <= 6 spaces is a hoist.
+hoisted = [l for l in lines
+           if re.match(r"^ {0,6}ALLOW_FIXTURES_IN_CI\s*:", l)]
+sys.exit(1 if hoisted else 0)
+PYEOF
+    then
+        ok "ALLOW_FIXTURES_IN_CI is not set at job or workflow level"
+    else
+        bad "ALLOW_FIXTURES_IN_CI is hoisted to job/workflow level -- the LIVE check would replay fixtures"
+    fi
+
+    # The live step must not carry it either, even as a step-level value.
+    if awk '/^      - name: Check the pinned versions/{f=1;next} /^      - name:/{f=0} f' "$WF" \
+         | grep -q 'ALLOW_FIXTURES_IN_CI'; then
+        bad "the live 'Check the pinned versions' step sets ALLOW_FIXTURES_IN_CI -- it would accept canned data"
+    else
+        ok "the live check step does not opt out of the fixture guard"
+    fi
+
+    # And the self-test step must carry it, or CI fails the way it just did.
+    if awk '/^      - name: Self-test the checker/{f=1;next} /^      - name:/{f=0} f' "$WF" \
+         | grep -q "ALLOW_FIXTURES_IN_CI: '1'"; then
+        ok "the self-test step opts in, so the fixture suite can run under GITHUB_ACTIONS"
+    else
+        bad "the self-test step does not set ALLOW_FIXTURES_IN_CI; every fixture assertion will exit 2 in CI"
     fi
 fi
 echo

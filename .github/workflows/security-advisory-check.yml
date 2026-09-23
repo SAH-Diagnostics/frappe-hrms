@@ -105,6 +105,17 @@ jobs:
       # vulnerable -- before asking it about today's -- is what separates "it exited 0" from
       # "it looked, and there was nothing there".
       - name: Self-test the checker against known-vulnerable fixtures
+        env:
+          # The checker refuses to replay fixtures when GITHUB_ACTIONS is set, so that a live
+          # check can never be satisfied by canned data. This suite is the one legitimate
+          # exception -- replaying fixtures IS its job -- so it opts in explicitly, for this
+          # step only.
+          #
+          # Do NOT hoist this to the job or workflow level. The "Check the pinned versions" step
+          # below must keep the guard, and a workflow-level value would disable it there too,
+          # turning the live check into a fixture replay that reports success forever. T17 in
+          # this suite fails if that happens.
+          ALLOW_FIXTURES_IN_CI: '1'
         run: bash .github/scripts/__tests__/check-app-advisories.test.sh
 
       # The pin suite guards `docker/init.sh` and `docker/docker-compose.yml`: that no app is

@@ -63,7 +63,8 @@
 #   GATE WITH REQUIRED REVIEWERS AND A `paths:` FILTER.
 #
 # Until then every Dependabot pull request here is a loaded production deploy awaiting a click.
-# The gate already exists on `staging` (deploy-prod.yml:21); it has not reached `main`, and
+# The gate already exists on `staging` (the `environment: production` key in deploy-prod.yml);
+# it has not reached `main` -- verified against origin/main, which carries neither key -- and
 # required reviewers have never been configured. Both are on the cutover runbook,
 # `helper/todos/erp-production-cutover-steps.md` (SAH-root helper/, not in this repository).
 # ============================================================================================
