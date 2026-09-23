@@ -175,9 +175,15 @@ jobs:
           } >> $GITHUB_STEP_SUMMARY
 
       - name: Revoke this runner's SSH access (VC-647)
+        # Not continue-on-error: a runner address left on the SSH rule must turn the run
+        # red, not hide behind a green deploy.
         if: always() && env.VC647_RUNNER_CIDR != ''
-        continue-on-error: true
         run: |
+          # secrets.env still exists here (Cleanup runs after this step). Read the host and
+          # instance name from it rather than from exported variables: VC-649 removed the
+          # step that exported them, and the revoke then ran with empty values and left the
+          # runner's /32 on the SSH rule.
+          if [ -f ${{ github.workspace }}/secrets.env ]; then source ${{ github.workspace }}/secrets.env; fi
           .github/scripts/lightsail-ssh-access.sh close \
             "$lightsail_host" \
             "${LIGHTSAIL_INSTANCE_NAME:-}"
