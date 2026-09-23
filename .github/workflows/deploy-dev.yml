@@ -11,13 +11,19 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+    # Binds the job to the GitHub environment so environment-scoped secrets, the
+    # deployment branch policy and required reviewers apply once they are configured.
+    environment: development
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Make scripts executable
         run: chmod +x .github/scripts/*.sh
@@ -34,25 +40,6 @@ jobs:
           .github/scripts/fetch-aws-secrets.sh \
             "${{ secrets.DEV_AWS_DEPLOY_SECRET_ID }}" \
             "${{ github.workspace }}/secrets.env"
-
-      - name: Load secrets as environment variables
-        run: |
-          source ${{ github.workspace }}/secrets.env
-          # Export all variables for use in subsequent steps
-          while IFS='=' read -r key value; do
-            # Skip comments and empty lines
-            [[ "$key" =~ ^#.*$ ]] && continue
-            [[ -z "$key" ]] && continue
-            # Register every value with the runner before it can reach a log.
-            # Values come from AWS Secrets Manager at run time, so GitHub does not
-            # mask them automatically the way it masks repository secrets -- the
-            # Lightsail SSH private key and encryption_key were printed in clear
-            # text in deploy logs because of this.
-            if [[ -n "$value" ]]; then
-              echo "::add-mask::$value"
-            fi
-            echo "$key=$value" >> $GITHUB_ENV
-          done < ${{ github.workspace }}/secrets.env
 
       - name: Generate environment file
         run: |
@@ -124,6 +111,7 @@ jobs:
           export HEALTHCHECK_URL="${CERTBOT_DOMAIN:+https://$CERTBOT_DOMAIN}"
           # Only ever true on a manual re-run where someone reviewed the printed diff.
           export ALLOW_DIRTY="${{ inputs.allow_dirty || false }}"
+          export HEALTHCHECK_TIMEOUT="${HEALTHCHECK_TIMEOUT:-900}"
           .github/scripts/deploy-docker-app.sh \
             "${{ github.server_url }}/${{ github.repository }}.git" \
             "/opt/app" \
@@ -167,7 +155,7 @@ jobs:
             echo ""
             echo "### Deployment Time"
             echo "- $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Revoke this runner's SSH access (VC-647)
         if: always() && env.VC647_RUNNER_CIDR != ''
