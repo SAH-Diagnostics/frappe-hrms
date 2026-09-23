@@ -80,6 +80,7 @@ You need Docker, docker-compose and git setup on your machine. Refer [Docker doc
 ```
 git clone https://github.com/frappe/hrms
 cd hrms/docker
+cp .env.example .env
 docker-compose up
 ```
 
