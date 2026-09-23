@@ -67,12 +67,32 @@ echo "=== Initializing bench and site (${SITE_NAME}) ==="
 # Ensure node in PATH for bench
 export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 
+# Pinned application versions.
+#
+# These were `version-16` -- a *branch*, which moves every time upstream merges. Because
+# `sites/` is not a Docker volume, `compose down && up` rebuilds the bench from scratch and
+# re-clones every app, so an unpinned deploy installs whatever was newest that day. That is
+# not theoretical: production was built on 2026-07-29 and staging on 2026-09-23 from these
+# same branch names, and ended up 719 (frappe), 639 (erpnext) and 204 (hrms) commits apart.
+#
+# The values below are the tags matching what PRODUCTION is running today, so that restoring
+# the deploy pipeline does not also ship ~1,562 commits of upstream change to an HR and
+# payroll system. Upgrading is a separate, deliberate piece of work -- change these values,
+# in their own PR, and let staging rebuild on them first.
+#
+# They are tags, not commit SHAs, because `bench init --frappe-branch` and `bench get-app
+# --branch` both forward the value to `git clone --branch`, which accepts a branch or a tag
+# but NOT an arbitrary SHA. Each tag below resolves to the exact commit production runs.
+FRAPPE_REF="${FRAPPE_REF:-v16.29.0}"    # 06613fc
+ERPNEXT_REF="${ERPNEXT_REF:-v16.30.0}"  # 8378b6e
+HRMS_REF="${HRMS_REF:-v16.15.0}"        # 1924234
+
 # Initialize bench directory if it does not exist (non-destructive)
 BENCH_DIR="/home/frappe/frappe-bench"
 cd /home/frappe
 if [ ! -d "$BENCH_DIR" ]; then
     echo "Creating bench at ${BENCH_DIR}"
-    bench init --skip-redis-config-generation --frappe-branch version-16 frappe-bench
+    bench init --skip-redis-config-generation --frappe-branch "$FRAPPE_REF" frappe-bench
 fi
 cd "$BENCH_DIR"
 
@@ -101,13 +121,18 @@ sed -i '/redis/d' ./Procfile 2>/dev/null || true
 sed -i '/watch/d' ./Procfile 2>/dev/null || true
 
 echo "=== Getting apps ==="
-bench get-app --branch version-16 erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
-bench get-app --branch version-16 hrms || echo "Warning: Failed to get hrms app (may already exist)"
+bench get-app --branch "$ERPNEXT_REF" erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
+bench get-app --branch "$HRMS_REF" hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
 SAH_CRM_REPO="${SAH_CRM_REPO:-https://github.com/SAH-Diagnostics/sah_crm}"
 # This branch targets `staging`. SAH_CRM_BRANCH is not passed into the container by
 # docker-compose.yml or generate-env-file.sh, so this literal is the only value that ever
 # applies -- it cannot be overridden from Secrets Manager today.
+#
+# sah_crm is deliberately NOT pinned, unlike frappe/erpnext/hrms above. It is our own
+# actively developed app, and the point of tracking a branch here is that a deploy picks up
+# the CRM work that was just merged. The upstream apps are pinned because we do not control
+# their release cadence; this one we do.
 SAH_CRM_BRANCH="${SAH_CRM_BRANCH:-staging}"
 bench get-app "$SAH_CRM_REPO" --branch "$SAH_CRM_BRANCH" || echo "Warning: Failed to get sah_crm app (may already exist)"
 
