@@ -25,7 +25,11 @@ set -euo pipefail
 #   VC647_RUNNER_CIDR - "close" removes this CIDR (falls back to detecting the IP again)
 #
 # IAM permissions required on the deploy credentials:
-#   lightsail:GetInstances, lightsail:GetInstancePortStates, lightsail:PutInstancePublicPorts
+#   lightsail:GetInstancePortStates and lightsail:PutInstancePublicPorts on the instance;
+#   lightsail:GetInstances only if LIGHTSAIL_INSTANCE_NAME is absent from the deploy secret.
+# For staging and prod the infrastructure repo grants these in Terraform (variable
+# deploy_iam_user), scoped to the instance and applied before SSH is restricted. The dev
+# host is not managed by Terraform, so its deploy user must be granted them by hand.
 #
 # Exits non-zero when the firewall could not be read or changed. The workflow steps run
 # with continue-on-error so a failure here is visible without aborting the job; the
