@@ -71,21 +71,34 @@ export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 #
 # These were `version-16` -- a *branch*, which moves every time upstream merges. Because
 # `sites/` is not a Docker volume, `compose down && up` rebuilds the bench from scratch and
-# re-clones every app, so an unpinned deploy installs whatever was newest that day. That is
-# not theoretical: production was built on 2026-07-29 and staging on 2026-09-23 from these
-# same branch names, and ended up 719 (frappe), 639 (erpnext) and 204 (hrms) commits apart.
-#
-# The values below are the tags matching what PRODUCTION is running today, so that restoring
-# the deploy pipeline does not also ship ~1,562 commits of upstream change to an HR and
-# payroll system. Upgrading is a separate, deliberate piece of work -- change these values,
-# in their own PR, and let staging rebuild on them first.
+# re-clones every app, so an unpinned deploy installs whatever was newest that day.
 #
 # They are tags, not commit SHAs, because `bench init --frappe-branch` and `bench get-app
 # --branch` both forward the value to `git clone --branch`, which accepts a branch or a tag
-# but NOT an arbitrary SHA. Each tag below resolves to the exact commit production runs.
-FRAPPE_REF="${FRAPPE_REF:-v16.29.0}"    # 06613fc
-ERPNEXT_REF="${ERPNEXT_REF:-v16.30.0}"  # 8378b6e
-HRMS_REF="${HRMS_REF:-v16.15.0}"        # 1924234
+# but NOT an arbitrary SHA.
+#
+# WHY THESE VALUES (VC-648, 2026-09-23)
+#
+# The previous pins (v16.29.0 / v16.30.0 / v16.15.0) were the versions production had been
+# running since 2026-07-29. Checking them against the GitHub Advisory API found **20 open
+# high/critical advisories** on the v16 line -- 4 critical, the oldest published 2026-08-13,
+# i.e. 27 days past the 14-day remediation standard the business is certifying against.
+# Every ceiling in that set is `< 16.35.0`, so the values below are the clearing versions.
+#
+# Keeping the old pins would have frozen an HR and payroll system on a known SQL injection
+# (GHSA-v38v-9h2p-hr8v), a server-side template injection (GHSA-6w83-8777-v93q) and two
+# account-takeover XSS issues. Pinning is only safe when the pin is maintained; an unmaintained
+# pin is worse than no pin, because it looks deliberate.
+#
+# THESE VALUES HAVE A DATE ON THEM. They were the `version-16` tips on 2026-09-23. Before this
+# reaches `main` -- which is what deploys production -- RE-DERIVE them and re-run
+# `.github/workflows/security-advisory-check.yml`. Merging a stale set is the same bug in a
+# new costume. The process that owns this is `helper/docs/erp-patch-and-dependency-process.md`
+# (SAH-root helper/, NOT in this repository -- do not "fix" this into a repo-relative link; that
+# folder holds production IP addresses and security-group ids and this repository is public).
+FRAPPE_REF="${FRAPPE_REF:-v16.35.0}"    # 012667b9c
+ERPNEXT_REF="${ERPNEXT_REF:-v16.35.0}"  # 12cd563fb
+HRMS_REF="${HRMS_REF:-v16.20.0}"        # c0a04b80e
 
 # Initialize bench directory if it does not exist (non-destructive)
 BENCH_DIR="/home/frappe/frappe-bench"
@@ -133,8 +146,26 @@ SAH_CRM_REPO="${SAH_CRM_REPO:-https://github.com/SAH-Diagnostics/sah_crm}"
 # actively developed app, and the point of tracking a branch here is that a deploy picks up
 # the CRM work that was just merged. The upstream apps are pinned because we do not control
 # their release cadence; this one we do.
+#
+# It also CANNOT be pinned the way they are: `--branch` takes a branch or a tag, and the
+# sah_crm repository has zero tags. Cutting a release tag there is tracked as a follow-up;
+# until then the deploy records the resolved SHA below so a rebuild is at least auditable
+# after the fact, which is what the 14-day process needs from it.
+#
+# NOTE for the staging->main cutover: this literal differs by branch -- `main` sets `main`,
+# `staging` sets `staging`. The merge silently picks one, changing the source branch of a
+# production application. Resolve it deliberately and record which was chosen.
 SAH_CRM_BRANCH="${SAH_CRM_BRANCH:-staging}"
 bench get-app "$SAH_CRM_REPO" --branch "$SAH_CRM_BRANCH" || echo "Warning: Failed to get sah_crm app (may already exist)"
+
+# Record the resolved sah_crm commit. It is branch-tracked, so this line is the only record of
+# what a given deploy actually installed; without it "which CRM code is in production?" is
+# unanswerable after the fact.
+if [ -d "$BENCH_DIR/apps/sah_crm/.git" ]; then
+    echo "=== sah_crm resolved to: $(git -C "$BENCH_DIR/apps/sah_crm" rev-parse HEAD 2>/dev/null || echo unknown) (branch $SAH_CRM_BRANCH) ==="
+else
+    echo "=== WARNING: sah_crm was not cloned; its get-app failure above was swallowed ==="
+fi
 
 echo "=== Preparing site: $SITE_NAME ==="
 

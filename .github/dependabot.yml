@@ -1,0 +1,122 @@
+# Dependabot configuration -- VC-648 (14-day ERP patch and dependency process)
+#
+# Cyber Essentials requires that security updates to software in scope are applied within 14 days
+# of release. That standard is unmeetable without something that tells us a fix exists, and this
+# repository had no such mechanism: the only reason anyone knew the ERP was carrying 20 open
+# high/critical advisories is that a human went looking, once.
+#
+# WHAT IS COVERED, AND WHY ONLY THIS
+# ----------------------------------
+# This repository is a fork of frappe/hrms, but it is used as the *deployment* repository: what
+# reaches a box is `docker/` plus `.github/`. The application code is NOT taken from this tree --
+# `docker/init.sh` installs frappe, erpnext and hrms with `bench get-app --branch <tag>` against
+# upstream. So the manifests in this tree describe code we do not deploy:
+#
+#   pyproject.toml, package.json, frontend/package.json, roster/package.json
+#       -> upstream HRMS's own dependencies, at whatever revision the fork was taken.
+#          Enabling `pip` or `npm` here would open pull requests against an application we
+#          neither run from this tree nor maintain. Every one of them would be closed unread,
+#          which is worse than no alerting at all: it teaches the reviewer that Dependabot pull
+#          requests are noise, and the one that matters gets closed with the rest.
+#
+# The deployed frappe/erpnext/hrms versions are covered instead by
+# `.github/workflows/security-advisory-check.yml`, which queries the GitHub Advisory Database for
+# the *pinned tags* in `docker/init.sh`. Dependabot cannot do that job, because those pins are
+# shell variables, not a manifest it can parse.
+#
+# Full process, including who owns a finding and how remediation is evidenced:
+#   helper/docs/erp-patch-and-dependency-process.md  (SAH-root helper/, not in this repo)
+#
+# NOT COVERED BY THIS FILE -- tracked as separate work, named here so the gap is not silent:
+#   - the sah_crm repository, which needs its own dependabot.yml
+#   - the host OS on the Lightsail boxes (unattended-upgrades / manual `apt`)
+#   - the RDS engine and its pending `system-update` maintenance actions
+#   - end-user devices, browsers and firmware
+#
+# REVIEWERS: `.github/CODEOWNERS` was scrubbed for this fork by VC-649 and now assigns both
+# `/.github/` and `/docker/` to @mohammad-dasseh and @alitamoor-dev, so a pull request raised here
+# requests a review that can actually arrive. That review is only ENFORCED once a ruleset on the
+# target branch enables "require code owner review" -- see `.github/DEPLOYMENT_CONTROLS.md`.
+# CODEOWNERS is not the same thing as the named owner of this process, which is still UNASSIGNED;
+# see section 0 of the process document referenced above.
+
+# ============================================================================================
+# THE PULL REQUESTS THIS FILE RAISES WILL TARGET `main`, AND A MERGE TO `main` DEPLOYS PRODUCTION
+# ============================================================================================
+# `main` is the default branch. Dependabot reads this configuration only from the default branch,
+# and the pull requests it opens target that branch. `main`'s `deploy-prod.yml` triggers on any
+# push to `main`, has no `paths:` filter, and -- on `main` today -- no `environment:` approval
+# gate. So merging a routine dependency bump would start an ungated production deploy, which is a
+# full bench rebuild, because `sites/` is not a volume.
+#
+# `target-branch: "staging"` looks like the fix and is NOT one. Per GitHub's documentation it
+# applies to VERSION updates only, and setting it makes Dependabot stop raising SECURITY updates
+# for that block entirely; security pull requests always target the default branch and cannot be
+# redirected. Using it here would trade the exact capability this ticket exists to obtain --
+# alerting on high and critical vulnerabilities -- for tidier routing of cosmetic bumps.
+#   https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference
+#   https://docs.github.com/en/code-security/dependabot/dependabot-security-updates/customizing-dependabot-security-prs
+#
+# Therefore, a hard precondition, not a preference:
+#
+#   DO NOT LAND THIS FILE ON `main` UNTIL `main`'s deploy-prod.yml CARRIES BOTH AN `environment:`
+#   GATE WITH REQUIRED REVIEWERS AND A `paths:` FILTER.
+#
+# Until then every Dependabot pull request here is a loaded production deploy awaiting a click.
+# The gate already exists on `staging` (deploy-prod.yml:21); it has not reached `main`, and
+# required reviewers have never been configured. Both are on the cutover runbook,
+# `helper/todos/erp-production-cutover-steps.md` (SAH-root helper/, not in this repository).
+# ============================================================================================
+
+version: 2
+
+updates:
+  # The deploy workflows hold the production SSH key and the AWS credentials. A vulnerable or
+  # hijacked action here is a straight path to the production box, which makes this the highest
+  # value ecosystem in the repository -- and the one nobody would have thought to check.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/London"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # One pull request for routine version bumps, so the queue stays readable. Dependabot
+      # raises SECURITY updates outside these groups, so grouping never delays a fix -- it only
+      # stops nine cosmetic bumps from burying one that matters.
+      actions-routine:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # `docker/docker-compose.yml` -- the mariadb, redis and frappe/bench images.
+  #
+  # The ecosystem is `docker-compose`, NOT `docker`: `docker` parses Dockerfiles, and this
+  # repository contains none, so it would have produced a config that validates, reports nothing,
+  # and looks exactly like a config that found nothing to report.
+  - package-ecosystem: "docker-compose"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/London"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      # mariadb is pinned to 10.8 (EOL) and its container still runs on the production host even
+      # though production's database is RDS. Bumping the tag is the wrong fix -- the service
+      # should not be on that host at all -- and a recurring pull request would keep proposing
+      # the wrong one. Removal is tracked with the production cutover; delete this ignore then.
+      - dependency-name: "mariadb"

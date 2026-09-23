@@ -14,7 +14,13 @@ services:
       - mariadb-data:/var/lib/mysql
 
   redis:
-    image: redis:alpine
+    # Pinned for RECORDABILITY, not to change behaviour: `redis:alpine` and `8.10.2-alpine`
+    # resolve to the same digest today (sha256:2d3814be...), so this is a no-op at deploy time.
+    # `alpine` is a moving tag -- it was pushed 2026-09-21 and will move again -- which means the
+    # running Redis version cannot be *recorded*, and an unrecordable version cannot be evidenced
+    # against a 14-day patch standard. Bump this deliberately; see
+    # helper/docs/erp-patch-and-dependency-process.md (SAH-root helper/, not in this repo).
+    image: redis:8.10.2-alpine
     restart: unless-stopped
 
   frappe:

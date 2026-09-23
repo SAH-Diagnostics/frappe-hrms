@@ -1,0 +1,142 @@
+[
+  {
+    "ghsa_id": "GHSA-6w83-8777-v93q",
+    "severity": "critical",
+    "state": "published",
+    "published_at": "2026-08-13T00:00:00Z",
+    "summary": "Server-side template injection",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "erpnext"
+        },
+        "vulnerable_version_range": ">= 16.0.0, < 16.32.0",
+        "patched_versions": "16.32.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-8pr6-r75h-h8xx",
+    "severity": "high",
+    "state": "published",
+    "published_at": "2026-08-13T00:00:00Z",
+    "summary": "Account takeover via stored XSS",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "erpnext"
+        },
+        "vulnerable_version_range": ">= 16.0.0, < 16.31.0",
+        "patched_versions": "16.31.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-rv4r-c8v3-3hrc",
+    "severity": "critical",
+    "state": "published",
+    "published_at": "2026-09-18T00:00:00Z",
+    "summary": "Account takeover via stored XSS",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "erpnext"
+        },
+        "vulnerable_version_range": ">= 16.0.0, < 16.32.0",
+        "patched_versions": "16.32.0"
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-v38v-9h2p-hr8v",
+    "severity": "critical",
+    "state": "published",
+    "published_at": "2026-09-20T00:00:00Z",
+    "summary": "SQL injection",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "erpnext"
+        },
+        "vulnerable_version_range": ">= 16.0.0, < 16.34.0",
+        "patched_versions": "16.34.0"
+      }
+    ]
+  },
+  {
+    "_synthetic": "NOT A REAL ADVISORY -- control for the severity filter. Its range covers every pin we will ever test, so if severity filtering breaks, every test fails at once.",
+    "ghsa_id": "GHSA-0000-medium-ctl",
+    "severity": "medium",
+    "state": "published",
+    "published_at": "2026-01-01T00:00:00Z",
+    "summary": "Synthetic medium -- must never be reported",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "erpnext"
+        },
+        "vulnerable_version_range": "< 16.40.0",
+        "patched_versions": "16.40.0"
+      }
+    ]
+  },
+  {
+    "_synthetic": "NOT A REAL ADVISORY -- control for range arithmetic. A v15-line advisory must not match a v16 pin, even though '< 15.9.0' alone would.",
+    "ghsa_id": "GHSA-0000-v15line-ctl",
+    "severity": "critical",
+    "state": "published",
+    "published_at": "2026-01-01T00:00:00Z",
+    "summary": "Synthetic v15-line critical -- must never be reported against a v16 pin",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "erpnext"
+        },
+        "vulnerable_version_range": ">= 15.0.0, < 15.9.0",
+        "patched_versions": "15.9.0"
+      }
+    ]
+  },
+  {
+    "_synthetic": "NOT A REAL ADVISORY -- control for the state filter. A withdrawn advisory must not be actioned.",
+    "ghsa_id": "GHSA-0000-closed-ctl",
+    "severity": "critical",
+    "state": "closed",
+    "published_at": "2026-01-01T00:00:00Z",
+    "summary": "Synthetic withdrawn critical -- must never be reported",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "erpnext"
+        },
+        "vulnerable_version_range": "< 16.40.0",
+        "patched_versions": "16.40.0"
+      }
+    ]
+  },
+  {
+    "_synthetic": "NOT A REAL ADVISORY -- control for the LOWER bound of a range conjunction. Excluded ONLY by '>= 16.36.0'; its upper bound covers the pin. The v15-line control cannot test this, because its upper bound alone already excludes a v16 pin -- so without this entry a parser that ignored every lower-bound clause passed the whole suite.",
+    "ghsa_id": "GHSA-0000-lowerbound-ctl",
+    "severity": "critical",
+    "state": "published",
+    "published_at": "2026-01-01T00:00:00Z",
+    "summary": "Synthetic future-version critical -- must never be reported against v16.35.0",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "erpnext"
+        },
+        "vulnerable_version_range": ">= 16.36.0, < 16.40.0",
+        "patched_versions": "16.40.0"
+      }
+    ]
+  }
+]

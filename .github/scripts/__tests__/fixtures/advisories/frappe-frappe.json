@@ -1,0 +1,12 @@
+[
+  {
+    "ghsa_id": "GHSA-8v98-cfpm-9p67",
+    "severity": "critical",
+    "state": "published",
+    "published_at": "2026-09-16T00:00:00Z",
+    "summary": "Arbitrary file read via outgoing email HTML",
+    "vulnerabilities": [
+      { "package": { "ecosystem": "pip", "name": "frappe" }, "vulnerable_version_range": ">= 16.0.0, < 16.30.0", "patched_versions": "16.30.0" }
+    ]
+  }
+]

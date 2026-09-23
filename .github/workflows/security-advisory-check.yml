@@ -1,0 +1,177 @@
+# ERP security advisory check -- VC-648 (14-day ERP patch and dependency process)
+#
+# Asks daily whether the frappe/erpnext/hrms versions pinned in docker/init.sh are carrying a
+# published high or critical advisory, and whether any of them is past 14 days.
+#
+# WHY THIS EXISTS SEPARATELY FROM DEPENDABOT
+# ------------------------------------------
+# Dependabot cannot see these versions. They are shell variables in docker/init.sh, consumed by
+# `bench get-app --branch <tag>` and resolved against upstream at build time -- not entries in a
+# manifest it parses. On 2026-09-23 that blind spot held 20 open high/critical advisories, four of
+# them critical and two 27 days past the standard, on an internet-facing HR and payroll system.
+#
+# ============================================================================================
+# THIS WORKFLOW IS INERT UNTIL IT REACHES `main`. READ BEFORE CITING IT AS EVIDENCE.
+# ============================================================================================
+# GitHub runs `schedule:` triggers ONLY from the repository's default branch, which is `main`.
+# Merged to `staging`, the daily run never fires -- the workflow is present, valid, and silent.
+# The same is true of `.github/dependabot.yml`, whose configuration is also read only from the
+# default branch. So the automated half of this ticket does not start working when this merges.
+#
+# It cannot simply be merged to `main` either: `main`'s `deploy-prod.yml` triggers on any push to
+# `main` with no `paths:` filter and -- on `main` today -- no `environment:` approval gate. A merge
+# containing nothing but this file would therefore start an ungated production deploy, which is a
+# full bench rebuild, on a host where `EXISTING_SITE` is still `false`.
+#
+# So this reaches `main` with the production cutover and not before. Until then it is exercised by
+# `workflow_dispatch` and by pushes that touch the pins. Do not record AC #2/#3 as met on the
+# strength of this file existing on a branch.
+# ============================================================================================
+
+name: ERP security advisory check
+
+on:
+  schedule:
+    # 06:00 UTC daily. Daily rather than weekly because the standard is 14 days: a weekly check
+    # can burn half the window before anyone is told. GitHub cron is UTC-only and does not follow
+    # BST, which is fine -- an hour's drift is immaterial against a 14-day clock.
+    #
+    # Caveat worth knowing: GitHub disables scheduled workflows after 60 days with no repository
+    # activity, without failing anything. A quiet quarter silently switches this off.
+    - cron: '0 6 * * *'
+
+  # Manual runs: the on-demand half of the process. Used when an advisory arrives out of band and
+  # someone needs to know immediately whether the pinned versions are affected.
+  workflow_dispatch:
+    inputs:
+      sla_days:
+        description: 'Days allowed before a high/critical advisory is overdue'
+        required: false
+        default: '14'
+
+  # Re-check whenever the pins move. A pull request that raises or lowers a version is exactly the
+  # moment the answer changes, and it is far cheaper to learn it in review than on a schedule
+  # three weeks later.
+  push:
+    paths:
+      - 'docker/init.sh'
+      - 'docker/docker-compose.yml'
+      - 'docker/__tests__/**'
+      - '.github/scripts/check-app-advisories.mjs'
+      - '.github/scripts/__tests__/**'
+      - '.github/workflows/security-advisory-check.yml'
+  pull_request:
+    paths:
+      # The test suites are in this list deliberately. They are the anti-vacuity gates for both
+      # controls, so a pull request that weakens a fixture or an assertion must re-run them.
+      - 'docker/init.sh'
+      - 'docker/docker-compose.yml'
+      - 'docker/__tests__/**'
+      - '.github/scripts/check-app-advisories.mjs'
+      - '.github/scripts/__tests__/**'
+      - '.github/workflows/security-advisory-check.yml'
+
+# Read-only. This job needs nothing but the checkout and a rate limit, and a security check is a
+# poor place to hold write scope.
+permissions:
+  contents: read
+
+concurrency:
+  # The event is part of the key, and nothing is cancelled. A cancelled job is neither green nor
+  # red: it raises no alert and produces no artifact, so cancelling would let a push to the
+  # default branch silently consume that day's scheduled check. For a control whose evidence is
+  # its run history, a ~10s duplicate run is much cheaper than a missing one.
+  group: erp-advisory-check-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check pinned ERP versions against the GitHub Advisory Database
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Self-test FIRST, against checked-in fixtures, with no network involved.
+      #
+      # This is the step that makes the result below worth reading. A security check that fails
+      # open is worse than no check at all: it reports success on the day it breaks, and nobody
+      # re-reads a green job. Proving the checker still flags versions that are known to be
+      # vulnerable -- before asking it about today's -- is what separates "it exited 0" from
+      # "it looked, and there was nothing there".
+      - name: Self-test the checker against known-vulnerable fixtures
+        run: bash .github/scripts/__tests__/check-app-advisories.test.sh
+
+      # The pin suite guards `docker/init.sh` and `docker/docker-compose.yml`: that no app is
+      # cloned from a moving ref, that each pin is attached to the app it names, and that the
+      # images carry recordable tags. It ran in NO workflow before this step existed, so its own
+      # description of T1 as "the single most valuable assertion here" was true of a check that
+      # could not fail CI.
+      - name: Self-test the version pins
+        run: bash docker/__tests__/init-app-pins.test.sh
+
+      - name: Check the pinned versions
+        env:
+          # Raises the API rate limit, and is scoped read-only by the permissions block above.
+          # Withheld on pull requests from forks: this repository is public, so a fork PR that
+          # touches the watched paths has its own code checked out and run by the two steps above.
+          # GitHub already forces the token read-only in that case, but the job only wants it for
+          # a rate limit, and 60 unauthenticated requests an hour is ample for three repositories.
+          GITHUB_TOKEN: ${{ github.event.pull_request.head.repo.fork && '' || secrets.GITHUB_TOKEN }}
+          SLA_DAYS: ${{ github.event.inputs.sla_days || '14' }}
+        run: |
+          set +e
+          # 2>&1 matters: every "could not perform the check" reason is written to stderr, so
+          # with stdout alone the 90-day artifact and the job summary recorded an exit-2 run as
+          # two header lines and no explanation -- for the one control whose value is being
+          # evidenceable. PIPESTATUS[0] still reads node's status, not tee's.
+          node .github/scripts/check-app-advisories.mjs --sla-days "$SLA_DAYS" 2>&1 | tee advisory-report.txt
+          status=${PIPESTATUS[0]}
+          set -e
+
+          {
+            echo '## ERP security advisory check'
+            echo
+            case "$status" in
+              0) echo 'No high or critical advisory affects the pinned frappe/erpnext/hrms versions.' ;;
+              1) echo '**Action required** -- a high or critical advisory affects a pinned version. Remediation is due within 14 days of publication; see `helper/docs/erp-patch-and-dependency-process.md` (SAH-root helper/, not in this repository).' ;;
+              *) echo '**The check could not be completed.** This is not a clean result -- treat it as an outage of the control itself and investigate before the next scheduled run.' ;;
+            esac
+            echo
+            echo '```'
+            cat advisory-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$status"
+
+      # Deliberately absent: a step that opens an issue on a finding.
+      #
+      # Be clear about what this does and does not buy, because the first version of this comment
+      # overstated it. On a PUBLIC repository the job summary and the uploaded artifact are BOTH
+      # world-readable, so the finding detail is already public either way; not filing an issue
+      # does not contain it. What it avoids is a titled, searchable, indexed, notifying record
+      # that stays open until someone closes it -- and the pins themselves are in the public tree
+      # and the advisories are in a public database, so the marginal disclosure here is the
+      # curated mapping plus confirmation that it is unremediated.
+      #
+      # If that mapping should not be public at all, the fix is not an issue policy: it is to
+      # print only counts and the exit status here and keep the detail out of the repository.
+      # That is a decision for whoever owns the process, not a default this file should pick.
+
+      - name: Record the report as an artifact
+        # Runs even on failure -- the failing run is the one whose output is worth keeping, and a
+        # 14-day standard has to be evidenced with something durable. GitHub expires these; the
+        # durable copy is the remediation record in helper/docs/erp-patch-and-dependency-process.md.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: erp-advisory-report-${{ github.run_id }}
+          path: advisory-report.txt
+          retention-days: 90
+          if-no-files-found: warn
