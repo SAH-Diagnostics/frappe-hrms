@@ -91,9 +91,8 @@ IDENTITY_OUTPUT=$(aws sts get-caller-identity 2>&1)
 IDENTITY_EXIT_CODE=$?
 
 if [ $IDENTITY_EXIT_CODE -eq 0 ]; then
-    # The caller identity (account id, IAM user ARN) is deliberately not echoed:
-    # workflow logs of this repository are public.
-    echo "✓ AWS CLI configured successfully (caller identity verified)"
+    echo "✓ AWS CLI configured successfully"
+    echo "$IDENTITY_OUTPUT"
     exit 0
 else
     echo "Error: Failed to authenticate with AWS"
