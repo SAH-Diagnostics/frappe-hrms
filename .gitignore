@@ -24,5 +24,6 @@ hrms/www/roster.html
 # Deployment secrets
 deploy/dev/.env.remote
 .env*
+!docker/.env.example
 *.pem
 *.key
