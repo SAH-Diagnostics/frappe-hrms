@@ -26,3 +26,4 @@ deploy/dev/.env.remote
 .env*
 *.pem
 *.key
+.secrets

@@ -28,11 +28,12 @@ fi
 # Clear output file
 > "$OUTPUT_ENV_FILE"
 
-# Required variables for Docker deployment
+# Required variables for Docker deployment.
+# The deploy-scope AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION are
+# intentionally NOT written to the box: nothing there reads them (backups use
+# BUCKET_*), and the file is handed to `docker compose --env-file`, so every key
+# in it is available to the container configuration.
 REQUIRED_VARS=(
-    "AWS_ACCESS_KEY_ID"
-    "AWS_SECRET_ACCESS_KEY"
-    "AWS_REGION"
     "BUCKET_ACCESS_KEY_ID"
     "BUCKET_SECRET_ACCESS_KEY"
     "BUCKET_ENDPOINT"

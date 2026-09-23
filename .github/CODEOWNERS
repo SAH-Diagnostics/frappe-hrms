@@ -1,13 +1,13 @@
-# This is a comment.
-# Each line is a file pattern followed by one or more owners.
+# Code owners for the deployment-control paths (VC-649).
+# Owners must be repository collaborators with write access, otherwise GitHub
+# skips the line. Reviews by these owners are required only once a ruleset on
+# the target branch enables "require code owner review"; see
+# .github/DEPLOYMENT_CONTROLS.md.
 
-# These owners will be the default owners for everything in
-# the repo. Unless a later match takes precedence.
-
-hrms/hr/ @ruchamahabal @asmitahase
-hrms/payroll/ @ruchamahabal @AyshaHakeem @iamraheelkhan
-
-frontend/ @ruchamahabal @asmitahase
-roster/ @ruchamahabal @asmitahase
-
-.github/ @asmitahase
+/.github/ @mohammad-dasseh @alitamoor-dev
+/docker/ @mohammad-dasseh @alitamoor-dev
+/scripts/ @mohammad-dasseh @alitamoor-dev
+/nginx/ @mohammad-dasseh @alitamoor-dev
+/.gitignore @mohammad-dasseh @alitamoor-dev
+/.gitattributes @mohammad-dasseh @alitamoor-dev
+/.actrc @mohammad-dasseh @alitamoor-dev
