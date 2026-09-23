@@ -147,10 +147,12 @@ apply_port_infos() {
     rm -f "$tmp"
 }
 
-show_ssh_rules() {
-    echo "SSH (22/tcp) rules now in force at the Lightsail firewall:"
+# Printed at the end of every run so the deploy log records the public port list
+# (the ticket's post-deployment check): expect 80, 443 and 22 from approved sources only.
+show_public_ports() {
+    echo "Public ports now in force at the Lightsail firewall:"
     aws lightsail get-instance-port-states --instance-name "$1" \
-        --query 'portStates[?fromPort<=`22` && toPort>=`22`].{fromPort:fromPort,toPort:toPort,protocol:protocol,cidrs:cidrs,ipv6Cidrs:ipv6Cidrs,cidrListAliases:cidrListAliases}' \
+        --query 'portStates[].{fromPort:fromPort,toPort:toPort,protocol:protocol,cidrs:cidrs,ipv6Cidrs:ipv6Cidrs,cidrListAliases:cidrListAliases}' \
         --output json 2>/dev/null || echo "(could not read port states)"
 }
 
@@ -195,5 +197,5 @@ case "$ACTION" in
         ;;
 esac
 
-show_ssh_rules "$INSTANCE"
+show_public_ports "$INSTANCE"
 exit 0
