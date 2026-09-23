@@ -60,6 +60,17 @@ jobs:
             "${{ github.workspace }}/secrets.env" \
             "${{ github.workspace }}/.env"
 
+      - name: Allow this runner to reach SSH (VC-647)
+        # SSH is restricted at the Lightsail firewall to approved addresses. Grant this
+        # runner's /32 for the duration of the run; it is revoked in the last step.
+        # A failure here is shown but not fatal: "Test SSH connection" is the real check.
+        continue-on-error: true
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/lightsail-ssh-access.sh open \
+            "$lightsail_host" \
+            "${LIGHTSAIL_INSTANCE_NAME:-}"
+
       - name: Setup SSH connection
         run: |
           source ${{ github.workspace }}/secrets.env
@@ -81,6 +92,14 @@ jobs:
         run: |
           source ${{ github.workspace }}/secrets.env
           .github/scripts/install-docker-dependencies.sh \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
+
+      - name: Configure host firewall (VC-647)
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/configure-host-firewall.sh \
             "$lightsail_user" \
             "$lightsail_host" \
             "${lightsail_port:-22}"
@@ -149,6 +168,14 @@ jobs:
             echo "### Deployment Time"
             echo "- $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
           } >> $GITHUB_STEP_SUMMARY
+
+      - name: Revoke this runner's SSH access (VC-647)
+        if: always() && env.VC647_RUNNER_CIDR != ''
+        continue-on-error: true
+        run: |
+          .github/scripts/lightsail-ssh-access.sh close \
+            "$lightsail_host" \
+            "${LIGHTSAIL_INSTANCE_NAME:-}"
 
       - name: Cleanup secrets
         if: always()
