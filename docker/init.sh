@@ -203,8 +203,10 @@ database_has_frappe_site() {
 
     echo "Checking whether database '$DB_NAME_VALUE' on '$DB_HOST_VALUE' holds a Frappe site..."
 
-    probe_output=$(mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" \
-        -p"$DB_PASSWORD_VALUE" \
+    # The password goes in MYSQL_PWD, never on argv: an argv password is readable by any
+    # user on the host via `ps` / /proc/<pid>/cmdline for as long as the client runs (VC-657).
+    probe_output=$(MYSQL_PWD="$DB_PASSWORD_VALUE" mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" \
+        -u "$DB_USER_VALUE" \
         -e "SHOW TABLES FROM \`$DB_NAME_VALUE\` LIKE 'tabUser';" 2>&1) || probe_status=$?
 
     if [ "$probe_status" -eq 0 ]; then
@@ -324,7 +326,6 @@ EOF
                 --db-root-password "$DB_PASSWORD_VALUE" \
                 --db-root-username "$DB_USER_VALUE" \
                 --admin-password "$ADMIN_PASSWORD_VALUE" \
-                --verbose \
                 --no-mariadb-socket 2>&1; then
                 echo "Site created successfully using bench new-site"
             else
@@ -336,7 +337,8 @@ EOF
                 mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
 
                 # Ensure target database exists (idempotent; requires privileges on RDS user)
-                mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+                # MYSQL_PWD, not -p: keeps the password off argv (VC-657).
+                MYSQL_PWD="$DB_PASSWORD_VALUE" mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" \
                     -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || true
 
                 # Create site_config.json with RDS credentials (only if it does not already exist)

@@ -25,8 +25,14 @@ if [ ! -f "$SECRETS_FILE" ]; then
     exit 1
 fi
 
+# The file holds every deploy secret: create it owner-only. umask must be set BEFORE the
+# truncation below, which is what creates the file; chmod covers a file that already existed
+# with a wider mode (VC-657).
+umask 077
+
 # Clear output file
 > "$OUTPUT_ENV_FILE"
+chmod 600 "$OUTPUT_ENV_FILE"
 
 # Required variables for Docker deployment.
 # The deploy-scope AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION are

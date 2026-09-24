@@ -16,8 +16,13 @@
 # That is minutes, not seconds. A short timeout here would turn a slow-but-healthy deploy
 # into a red build, so the default window is 15 minutes and every attempt is announced.
 #
-# On failure it prints container status and logs. It never discards stderr: a deploy that
-# fails silently is the problem this script exists to solve.
+# On failure it saves container status and logs to a root-only file ON THE BOX
+# ($FAILURE_LOG_DIR/last-failure.log, dir 0700, file 0600) and prints only that path. It never
+# prints the logs themselves: this output lands in a public GitHub Actions log, and bench /
+# init.sh output can carry credentials (VC-657). The failure is still loud -- the job goes
+# red and names the file to read -- so a deploy never fails silently.
+#
+# FAILURE_LOG_DIR is overridable only so the tests can point it at a temp dir.
 
 set -uo pipefail
 
@@ -26,6 +31,8 @@ COMPOSE_FILE="${2:?COMPOSE_FILE is required}"
 HEALTHCHECK_URL="${3:-http://localhost:8000}"
 TIMEOUT_SECONDS="${4:-900}"
 INTERVAL_SECONDS="${5:-15}"
+FAILURE_LOG_DIR="${FAILURE_LOG_DIR:-/var/log/erp-deploy}"
+FAILURE_LOG="$FAILURE_LOG_DIR/last-failure.log"
 
 cd "$DEPLOY_DIR" || { echo "FATAL: $DEPLOY_DIR is not accessible." >&2; exit 1; }
 
@@ -56,10 +63,24 @@ done
 echo "FATAL: site did not respond at $HEALTHCHECK_URL within ${TIMEOUT_SECONDS}s." >&2
 echo "The containers may be up while the application is not; the deploy is NOT healthy." >&2
 
-echo "=== Container status ===" >&2
-sudo docker compose -f "$COMPOSE_FILE" ps >&2 || true
-
-echo "=== Last 100 log lines ===" >&2
-sudo docker compose -f "$COMPOSE_FILE" logs --tail=100 >&2 || true
+# Create the dir 0700 and the file 0600 BEFORE any content is written to it, so the logs
+# are never readable by another user, not even for an instant.
+if sudo install -d -m 700 "$FAILURE_LOG_DIR" \
+    && sudo touch "$FAILURE_LOG" \
+    && sudo chmod 600 "$FAILURE_LOG"; then
+    {
+        echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') verify-site failure: $HEALTHCHECK_URL ==="
+        echo "=== Container status ==="
+        sudo docker compose -f "$COMPOSE_FILE" ps 2>&1 || true
+        echo "=== Last 100 log lines ==="
+        sudo docker compose -f "$COMPOSE_FILE" logs --tail=100 2>&1 || true
+    } | sudo tee "$FAILURE_LOG" >/dev/null || true
+    sudo chmod 600 "$FAILURE_LOG" || true
+    echo "Container status and logs saved on the box to $FAILURE_LOG (root-only)." >&2
+    echo "Read them there with: sudo cat $FAILURE_LOG" >&2
+else
+    echo "WARNING: could not create $FAILURE_LOG; logs were not saved." >&2
+    echo "Read them on the box with: sudo docker compose -f $COMPOSE_FILE logs" >&2
+fi
 
 exit 1

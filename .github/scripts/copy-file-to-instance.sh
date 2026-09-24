@@ -44,6 +44,15 @@ if [ ! -f "$SSH_KEY_PATH" ]; then
     exit 1
 fi
 
+# Remove any existing remote copy first. scp keeps the mode of a file that already exists,
+# so an old 0644 `.env` would stay 0644; a fresh file takes the source's mode (0600 for the
+# generated env file). This matters when a later deploy step aborts before the file is
+# moved and chmod'ed into place.
+if ! ssh -i "$SSH_KEY_PATH" -p "$LIGHTSAIL_PORT" -o StrictHostKeyChecking=accept-new "$LIGHTSAIL_USER@$LIGHTSAIL_HOST" "rm -f -- '$REMOTE_PATH'"; then
+    echo "Error: Failed to clear existing remote file"
+    exit 1
+fi
+
 # Use SCP to copy file
 if scp -i "$SSH_KEY_PATH" -P "$LIGHTSAIL_PORT" -o StrictHostKeyChecking=accept-new "$LOCAL_FILE" "$LIGHTSAIL_USER@$LIGHTSAIL_HOST:$REMOTE_PATH" 2>&1; then
     echo "✓ File copied successfully"

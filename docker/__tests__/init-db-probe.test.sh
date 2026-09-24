@@ -231,10 +231,13 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "T7: the pre-fix version behaves differently (anti-vacuity control)"
+# Pinned, not origin/main: once staging is promoted, main carries the fix and a moving ref
+# would turn this control red. 4c09caf84 is the last main commit before the VC-620 probe.
+PRE_FIX_REF="4c09caf847c95ca0e5de352330ad5bc9314295ae"
 BASE_INIT="$(mktemp)"
 trap 'rm -f "$BASE_INIT"' EXIT
 
-if git -C "$SCRIPT_DIR" show "origin/main:docker/init.sh" > "$BASE_INIT" 2>/dev/null; then
+if git -C "$SCRIPT_DIR" show "$PRE_FIX_REF:docker/init.sh" > "$BASE_INIT" 2>/dev/null; then
     T7_OUT="$(INIT_SH="$BASE_INIT" run_scenario '
 mysql() { echo "ERROR 1040 (HY000): Too many connections" >&2; return 1; }
 ')"
@@ -244,7 +247,7 @@ mysql() { echo "ERROR 1040 (HY000): Too many connections" >&2; return 1; }
         bad "pre-fix version did not reproduce the bug; T1 may not be testing the fix. Got: $(tr '\n' ' ' <<<"$T7_OUT")"
     fi
 else
-    bad "could not read origin/main:docker/init.sh — the anti-vacuity control did not run. Fetch the base ref (a shallow clone is not sufficient)."
+    bad "could not read $PRE_FIX_REF:docker/init.sh — the anti-vacuity control did not run. Fetch the base ref (a shallow clone is not sufficient)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -333,6 +336,89 @@ else
 fi
 
 rm -rf "$GUARD_DIR"
+
+# ---------------------------------------------------------------------------
+# T10 — the DB password never reaches mysql's argv (VC-657).
+#
+# An argv password is readable by every user on the host through `ps` and
+# /proc/<pid>/cmdline for as long as the client runs. The probe must hand it over in
+# MYSQL_PWD instead. The stub is a real executable on PATH, not a shell function, so the
+# assertion also proves MYSQL_PWD is EXPORTED into the child's environment -- which is
+# what the real mysql client reads.
+# ---------------------------------------------------------------------------
+echo
+echo "T10: the probe passes the password in MYSQL_PWD, never on argv"
+PWD_DIR="$(mktemp -d)"
+T10_PASSWORD="probe-pw-7f3c-not-a-real-secret"
+cat > "$PWD_DIR/mysql" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$0" "$@" > "$STUB_RECORD_DIR/argv"
+printf '%s' "${MYSQL_PWD-<unset>}" > "$STUB_RECORD_DIR/mysql_pwd"
+echo "tabUser"
+exit 0
+STUB
+chmod +x "$PWD_DIR/mysql"
+
+# The stub runs as a child process, so it needs STUB_RECORD_DIR exported; run_scenario's
+# subshell sees the plain shell variables (PWD_DIR, T10_PASSWORD) directly.
+# shellcheck disable=SC2034
+STUB_RECORD_DIR="$PWD_DIR"
+# SC2016: the stub string is eval'd inside run_scenario, so its $VARs must stay literal here.
+# shellcheck disable=SC2016
+T10_OUT="$(run_scenario '
+export STUB_RECORD_DIR
+PATH="$PWD_DIR:$PATH"
+DB_PASSWORD_VALUE="$T10_PASSWORD"
+')"
+
+if [ -f "$PWD_DIR/argv" ]; then
+    ok "the probe invoked the mysql client (non-vacuous)"
+else
+    bad "the stub mysql was never called; T10 did not exercise the probe. Got: $(tr '\n' ' ' <<<"$T10_OUT")"
+fi
+if grep -q "RESULT_CODE=0" <<<"$T10_OUT"; then
+    ok "the probe still reads the stub's answer (tabUser -> has site)"
+else
+    bad "expected RESULT_CODE=0, got: $(tr '\n' ' ' <<<"$T10_OUT")"
+fi
+if [ -f "$PWD_DIR/argv" ] && ! grep -qF -- "$T10_PASSWORD" "$PWD_DIR/argv"; then
+    ok "the password is not in mysql's argv"
+else
+    bad "the password appears in mysql's argv (visible to ps / /proc/<pid>/cmdline)"
+fi
+if [ "$(cat "$PWD_DIR/mysql_pwd" 2>/dev/null)" = "$T10_PASSWORD" ]; then
+    ok "MYSQL_PWD carries the password into the client's environment"
+else
+    bad "MYSQL_PWD was '$(cat "$PWD_DIR/mysql_pwd" 2>/dev/null)', expected the DB password"
+fi
+rm -rf "$PWD_DIR"
+
+# Static checks over the whole file: they cover the fallback CREATE DATABASE call, which
+# only runs after a failed `bench new-site` and so cannot be reached without a filesystem.
+echo
+echo "T11: no mysql call in init.sh puts the password on argv, and bench runs without --verbose"
+# SC2016: the patterns below are literal source text, not expansions.
+# shellcheck disable=SC2016
+if grep -qF -- '-p"$DB_PASSWORD_VALUE"' "$INIT_SH"; then
+    bad "init.sh still passes -p\"\$DB_PASSWORD_VALUE\" on a mysql command line"
+else
+    ok "no -p\"\$DB_PASSWORD_VALUE\" in init.sh"
+fi
+MYSQL_CALLS="$(grep -cE '(^|[[:space:]]|\()mysql -h ' "$INIT_SH")"
+# shellcheck disable=SC2016
+MYSQL_PWD_CALLS="$(grep -cE 'MYSQL_PWD="\$DB_PASSWORD_VALUE" mysql -h ' "$INIT_SH")"
+if [ "$MYSQL_CALLS" -ge 2 ] && [ "$MYSQL_CALLS" = "$MYSQL_PWD_CALLS" ]; then
+    ok "all $MYSQL_CALLS mysql client calls take the password from MYSQL_PWD"
+else
+    bad "expected every mysql call (>= 2) to be prefixed by MYSQL_PWD; calls=$MYSQL_CALLS, with MYSQL_PWD=$MYSQL_PWD_CALLS"
+fi
+# --verbose makes bench echo its database commands, and the new-site call carries the DB
+# root and admin passwords.
+if grep -qE '^[[:space:]]*--verbose' "$INIT_SH"; then
+    bad "init.sh still passes --verbose to bench"
+else
+    ok "no --verbose flag in init.sh"
+fi
 
 echo
 echo "-----------------------------------------"

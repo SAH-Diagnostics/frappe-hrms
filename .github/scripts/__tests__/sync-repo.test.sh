@@ -44,6 +44,10 @@ contains() { # description, needle, haystack
     case "$3" in *"$2"*) pass "$1" ;; *) fail "$1 (missing '$2')" ;; esac
 }
 
+lacks() { # description, needle, haystack
+    case "$3" in *"$2"*) fail "$1 (found '$2')" ;; *) pass "$1" ;; esac
+}
+
 # A `sudo` stub, so the clone path can be exercised without privileges.
 STUB_BIN="$(mktemp -d)"
 cat > "$STUB_BIN/sudo" <<'STUB'
@@ -119,7 +123,12 @@ check "exited non-zero" 1 "$status"
 check "HEAD did NOT move" "$BASE_SHA" "$(git -C "$BOX" rev-parse HEAD)"
 check "the local edit survived" "image: frappe/bench:v5.27.0-handmade" "$(cat "$BOX/compose.yml")"
 contains "emitted a FATAL diagnostic" "FATAL" "$out"
-contains "printed the diff for review" "handmade" "$out"
+# VC-657: this output is a public Actions log, and an on-box edit can be a secret, so only
+# the diff SUMMARY (--stat) is printed. The file name must appear; its content must not.
+# (Before VC-657 this asserted the opposite -- that 'handmade' WAS printed. Flipped on purpose.)
+contains "named the drifted file for review" "compose.yml" "$out"
+contains "printed the --stat summary (not just git status)" "1 file changed" "$out"
+lacks "did not print the drifted content" "handmade" "$out"
 echo
 
 # ---------------------------------------------------------------------------
@@ -131,6 +140,9 @@ check "exited 0" 0 "$status"
 check "HEAD moved to the target" "$TARGET_SHA" "$(git -C "$BOX" rev-parse HEAD)"
 check "the local edit was discarded" "image: frappe/bench:v5.28.0" "$(cat "$BOX/compose.yml")"
 contains "warned before discarding" "WARNING" "$out"
+contains "named the discarded file" "compose.yml" "$out"
+contains "printed the --stat summary of what is discarded" "1 file changed" "$out"
+lacks "did not print the discarded content" "handmade" "$out"
 echo
 
 # ---------------------------------------------------------------------------

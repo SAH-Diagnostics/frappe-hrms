@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - 'nginx/**'
-      - '.github/workflows/configure-nginx-prod.yml'
   workflow_dispatch:
 
 permissions:

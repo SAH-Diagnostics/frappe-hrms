@@ -35,6 +35,10 @@
 #   T11 generate-env-file.sh no longer writes the deploy-scope AWS keys onto the box
 #   T12 the sah_crm branch is chosen per environment by its deploy workflow and reaches the
 #       container through compose, so promoting staging to main cannot ship staging's value
+#   T13 (VC-657) the on-box .env is moved, not copied, and created owner-only; no container log
+#       is printed into the public deploy log (verify-site.sh saves it to a root-only file)
+#   T14 (VC-657) secret-scan.yml runs a pinned, checksum-verified gitleaks with --redact, holds
+#       no secrets, uses no gitleaks-action and passes no ${{ }} expression into a run: script
 #
 # REPO_ROOT can be overridden to run the same assertions against another checkout, which is
 # how red-on-base and mutation runs are produced. Nothing here touches a network or AWS.
@@ -50,6 +54,9 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 WORKFLOW_DIR="$REPO_ROOT/.github/workflows"
 SAH_WORKFLOWS="deploy-prod.yml deploy-staging.yml deploy-dev.yml configure-nginx-prod.yml configure-nginx-staging.yml configure-nginx-dev.yml"
 CONTROLS_WORKFLOW="deployment-controls.yml"
+# Its own list, NOT $SAH_WORKFLOWS: it is not a deploy workflow, holds no environment and no
+# secrets, so T2/T5/T12 do not apply to it.
+SECRET_SCAN_WORKFLOW="secret-scan.yml"
 
 ALLOWED_OWNERS="@mohammad-dasseh @alitamoor-dev"
 SCAN_ROOTS=".github docker scripts"
@@ -96,7 +103,7 @@ echo
 
 # ---------------------------------------------------------------------------
 echo "T1: one top-level permissions block per workflow, contents: read, nothing else writable"
-for wf in $SAH_WORKFLOWS; do
+for wf in $SAH_WORKFLOWS $SECRET_SCAN_WORKFLOW; do
     path="$WORKFLOW_DIR/$wf"
     require_file T1 "$path" || continue
     headers="$(lf "$path" | grep -cE '^permissions:')"
@@ -142,7 +149,7 @@ echo
 
 # ---------------------------------------------------------------------------
 echo "T3: no workflow writes to GITHUB_ENV"
-for wf in $SAH_WORKFLOWS; do
+for wf in $SAH_WORKFLOWS $SECRET_SCAN_WORKFLOW; do
     path="$WORKFLOW_DIR/$wf"
     require_file T3 "$path" || continue
     count="$(lf "$path" | grep -c GITHUB_ENV)"
@@ -153,7 +160,7 @@ echo
 # ---------------------------------------------------------------------------
 echo "T4: every action is pinned to a full commit SHA with a version comment"
 PIN_RE='^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}[[:space:]]+#[[:space:]]*v[0-9]+(\.[0-9]+){0,2}[[:space:]]*$'
-for wf in $SAH_WORKFLOWS $CONTROLS_WORKFLOW; do
+for wf in $SAH_WORKFLOWS $CONTROLS_WORKFLOW $SECRET_SCAN_WORKFLOW; do
     path="$WORKFLOW_DIR/$wf"
     require_file T4 "$path" || continue
     total="$(lf "$path" | grep -cE '^[[:space:]]*-?[[:space:]]*uses:')"
@@ -384,6 +391,113 @@ if require_file T12 "$path"; then
     check "T12 init.sh: the sah_crm clone uses \$SAH_CRM_BRANCH" 1 \
         "$(lf "$path" | grep -cE 'bench get-app "\$SAH_CRM_REPO" --branch "\$SAH_CRM_BRANCH"')"
 fi
+echo
+
+# ---------------------------------------------------------------------------
+echo "T13: the on-box .env is moved and owner-only, and no container log reaches the deploy log"
+# SC2016 (T13/T14): the single-quoted patterns match literal script text such as
+# $ENV_FILE_SOURCE and ${{ }}; they are not meant to expand. Scoped to the next command only,
+# so each literal-pattern line below carries its own directive.
+# The deploy log is public. A copied .env left every secret in the upload path (the user's
+# home); a group/world-readable .env exposed it to every account on the box; and container
+# logs (bench, init.sh) can carry credentials.
+path="$REPO_ROOT/.github/scripts/deploy-docker-app.sh"
+if require_file T13 "$path"; then
+    # shellcheck disable=SC2016
+    check "T13 deploy-docker-app.sh: moves the env file into place (mv -f)" 1 \
+        "$(lf "$path" | grep -cE '^[[:space:]]*mv -f \$ENV_FILE_SOURCE \$DEPLOY_DIR/\.env[[:space:]]*$')"
+    check "T13 deploy-docker-app.sh: never copies the env file (no 'cp \$ENV_FILE_SOURCE')" 0 \
+        "$(lf "$path" | grep -cE '(^|[[:space:]])cp[[:space:]].*\$\{?ENV_FILE_SOURCE')"
+    order="$(lf "$path" | awk '
+        /^[[:space:]]*umask 077[[:space:]]*$/ && !u { u = NR }
+        /^[[:space:]]*mv -f \$ENV_FILE_SOURCE / && !m { m = NR }
+        /^[[:space:]]*chmod 600 \$DEPLOY_DIR\/\.env[[:space:]]*$/ && !c { c = NR }
+        END { print ((u && m && c && u < m && m < c) ? "umask-mv-chmod" : "wrong:" u "," m "," c) }
+    ')"
+    check "T13 deploy-docker-app.sh: umask 077, then mv -f, then chmod 600" umask-mv-chmod "$order"
+    check "T13 deploy-docker-app.sh: runs no 'docker compose ... logs'" 0 \
+        "$(lf "$path" | grep -vE '^[[:space:]]*(#|echo )' | grep -cE 'docker[[:space:]]+compose.*[[:space:]]logs([[:space:]]|$)')"
+fi
+path="$REPO_ROOT/.github/scripts/remote/verify-site.sh"
+if require_file T13 "$path"; then
+    logs_lines="$(lf "$path" | grep -vE '^[[:space:]]*(#|echo )' | grep -cE 'docker[[:space:]]+compose.*[[:space:]]logs([[:space:]]|$)')"
+    check "T13 verify-site.sh: exactly one 'docker compose ... logs' call (non-vacuous)" 1 "$logs_lines"
+    # That call must sit in the { ... } group whose output is piped to the root-only file and
+    # nowhere else: the group's closing line must tee to \$FAILURE_LOG and discard stdout.
+    sink="$(lf "$path" | awk '
+        /^[[:space:]]*(#|echo )/ { next }
+        /docker[[:space:]]+compose.*[[:space:]]logs([[:space:]]|$)/ { seen = 1; next }
+        seen && /^[[:space:]]*}/ { print; exit }
+    ')"
+    # shellcheck disable=SC2016
+    case "$sink" in
+        *'| sudo tee "$FAILURE_LOG" >/dev/null'*) pass "T13 verify-site.sh: container logs are piped only to \$FAILURE_LOG" ;;
+        *) fail "T13 verify-site.sh: container logs are not confined to \$FAILURE_LOG (group closes with: '$sink')" ;;
+    esac
+    check "T13 verify-site.sh: failure log defaults to /var/log/erp-deploy" 1 \
+        "$(lf "$path" | grep -cE '^FAILURE_LOG_DIR="\$\{FAILURE_LOG_DIR:-/var/log/erp-deploy\}"$')"
+    # shellcheck disable=SC2016
+    check "T13 verify-site.sh: failure-log dir is created 0700" 1 \
+        "$(lf "$path" | grep -cF 'sudo install -d -m 700 "$FAILURE_LOG_DIR"')"
+fi
+path="$REPO_ROOT/.github/scripts/generate-env-file.sh"
+if require_file T13 "$path"; then
+    order="$(lf "$path" | awk '
+        /^[[:space:]]*umask 077[[:space:]]*$/ && !u { u = NR }
+        /^[[:space:]]*>[[:space:]]*"\$OUTPUT_ENV_FILE"[[:space:]]*$/ && !t { t = NR }
+        END { print ((u && t && u < t) ? "umask-first" : "wrong:" u "," t) }
+    ')"
+    check "T13 generate-env-file.sh: umask 077 is set before the env file is truncated" umask-first "$order"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+echo "T14: secret-scan.yml runs a pinned, verified gitleaks with --redact and holds no secrets"
+path="$WORKFLOW_DIR/$SECRET_SCAN_WORKFLOW"
+if require_file T14 "$path"; then
+    calls="$(lf "$path" | grep -vE '^[[:space:]]*#' | grep -E '(^|[[:space:]])gitleaks[[:space:]]+(git|dir|detect|protect|stdin)([[:space:]]|$)')"
+    n_calls="$(printf '%s' "$calls" | grep -c .)"
+    n_redacted="$(printf '%s' "$calls" | grep -c -- '--redact')"
+    if [ "$n_calls" -ge 1 ] && [ "$n_calls" = "$n_redacted" ]; then
+        pass "T14 secret-scan.yml: all $n_calls gitleaks scan call(s) pass --redact"
+    else
+        fail "T14 secret-scan.yml: gitleaks scan calls=$n_calls, with --redact=$n_redacted (must be equal and >= 1)"
+    fi
+    check "T14 secret-scan.yml: does not use gitleaks-action" 0 \
+        "$(lf "$path" | grep -vE '^[[:space:]]*#' | grep -ciE 'gitleaks-action|uses:[^#]*gitleaks')"
+    check "T14 secret-scan.yml: references no secrets" 0 "$(lf "$path" | grep -c 'secrets\.')"
+    check "T14 secret-scan.yml: uploads no report artifact" 0 "$(lf "$path" | grep -c 'upload-artifact')"
+    check "T14 secret-scan.yml: verifies the gitleaks download with sha256sum -c" 1 \
+        "$(lf "$path" | grep -cE 'sha256sum -c')"
+    check "T14 secret-scan.yml: pins a 64-hex gitleaks sha256" 1 \
+        "$(lf "$path" | grep -cE '^[[:space:]]+GITLEAKS_SHA256:[[:space:]]+[0-9a-f]{64}[[:space:]]*$')"
+    check "T14 secret-scan.yml: checkout is SHA-pinned (v4.4.0)" 1 \
+        "$(lf "$path" | grep -cE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+actions/checkout@11d5960a326750d5838078e36cf38b85af677262[[:space:]]+#[[:space:]]*v4\.4\.0[[:space:]]*$')"
+    check "T14 secret-scan.yml: checkout fetches full history (fetch-depth: 0)" 1 \
+        "$(lf "$path" | grep -cE '^[[:space:]]+fetch-depth:[[:space:]]*0[[:space:]]*$')"
+    # Event fields reach the script through env:, never as ${{ }} spliced into run: text,
+    # where a crafted ref or title would be executed.
+    # shellcheck disable=SC2016
+    stray="$(lf "$path" | grep -F '${{' | grep -vcE '^[[:space:]]+[A-Z_]+:[[:space:]]+\$\{\{[^}]*\}\}[[:space:]]*$')"
+    check "T14 secret-scan.yml: every \${{ }} expression is an env: mapping, none inside run:" 0 "$stray"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+echo "T15: configure-nginx workflows are not triggered by edits to their own file"
+# configure-nginx.sh rewrites the vhost as HTTP-only and setup-certbot.sh skips a host that
+# already has a certificate, so an unintended run drops TLS. Listing the workflow's own path
+# under `paths:` meant any edit to the workflow -- including a staging -> main promotion that
+# touches it -- ran it against that environment. Only nginx/** (or a manual run) may.
+for env in prod staging dev; do
+    path="$WORKFLOW_DIR/configure-nginx-$env.yml"
+    if require_file T15 "$path"; then
+        check "T15 configure-nginx-$env.yml: does not list its own path as a push trigger" 0 \
+            "$(lf "$path" | grep -cE "^[[:space:]]*-[[:space:]]*'?\.github/workflows/configure-nginx-$env\.yml'?[[:space:]]*$")"
+        check "T15 configure-nginx-$env.yml: still triggers on nginx/** (non-vacuous)" 1 \
+            "$(lf "$path" | grep -cE "^[[:space:]]*-[[:space:]]*'nginx/\*\*'[[:space:]]*$")"
+    fi
+done
 echo
 
 echo "-----------------------------------------"

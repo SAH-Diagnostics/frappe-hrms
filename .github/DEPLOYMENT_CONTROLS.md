@@ -52,7 +52,7 @@ Evidence line numbers in this table refer to the base commit `0e10158a` (the tre
 | 19 | `docker/docker-compose.yml` falls back to a trivial database root password and admin password when the `.env` value is empty. | `docker/docker-compose.yml:12,30,32,37` | High | Out of scope: PR #4 (VC-646, targets `main`). Not duplicated here. | PR #4 | Open elsewhere |
 | 20 | History scan for committed secrets across all SAH-era branches: no `.env`, `.pem` or `.key` ever committed except `docker/.env.example` on the VC-646 branch; the diff-content grep over every SAH-era change to `.github/`, `docker/` and `scripts/` found no AWS key id, PEM header, base64 PEM marker, GitHub or Slack token, or password/secret-key assignment. | `git log --all --since=2025-11-01 -p -- .github docker scripts`, 2026-09-23 | Info | None. | - | Clean |
 | 21 | Where the Frappe `encryption_key` in the prod secret originates (terraform does not write it) is UNVERIFIED. | `terraform/frappe/prod/main.tf:212-249` has no such key | Info | Runbook 0b resolves whether the leaked value is live. | Ops | Open |
-| 22 | On-box `/home/ubuntu/.env` copy is written by `scp` without an explicit mode; `/opt/app/.env` is `chmod 600`. `StrictHostKeyChecking=accept-new` plus `ssh-keyscan` gives trust-on-first-use host keys. | `.github/scripts/deploy-docker-app.sh:86-87`; `setup-ssh.sh:39` | Low | Follow-up. | Follow-up | Open |
+| 22 | On-box `/home/ubuntu/.env` copy is written by `scp` without an explicit mode; `/opt/app/.env` is `chmod 600`. `StrictHostKeyChecking=accept-new` plus `ssh-keyscan` gives trust-on-first-use host keys. | `.github/scripts/deploy-docker-app.sh:86-87`; `setup-ssh.sh:39` | Low | VC-657: `copy-file-to-instance.sh` removes the remote file before `scp`, so the upload takes the runner file's 0600 mode; the deploy step then `mv`s it into `/opt/app` (no copy left behind). Host-key pinning is still a follow-up. | PR / follow-up | `.env` part done; host keys open |
 
 ## 3 Branches, environments and promotion flow
 
@@ -99,7 +99,7 @@ Readers of the Secrets Manager secret: the three static IAM users whose keys sit
 
 ### 4.3 On-box environment file
 
-`generate-env-file.sh` writes the file on the runner; the "Transfer environment file" step copies it to `/home/ubuntu/.env` via `scp` (`copy-file-to-instance.sh:48`); the Deploy step copies it to `/opt/app/.env` with mode 600 (`deploy-docker-app.sh:86-87`) and passes it to `docker compose --env-file` (`deploy-docker-app.sh:105-106`). Contents by name after this PR: `BUCKET_*` (five), `DATABASE_*` (five), `DB_*` (five, mapped), `SITE_NAME`, `SITE_URL`, `EXISTING_SITE`, `UPDATE_CODE`, plus `SAH_CRM_BRANCH`, which the deploy workflow appends itself (not from Secrets Manager; VC-655). The compose file forwards the `DB_*`, `SITE_*`, `EXISTING_SITE`, `BUCKET_*` and `SAH_CRM_BRANCH` values into the `frappe` container as process environment (`docker/docker-compose.yml:24-51`); `DATABASE_*` and `UPDATE_CODE` stay in the file only.
+`generate-env-file.sh` writes the file on the runner; the file is created 0600 (`umask 077`); the "Transfer environment file" step removes any old `/home/ubuntu/.env` and uploads a fresh copy via `scp`, which keeps that mode (`copy-file-to-instance.sh`); the Deploy step moves it to `/opt/app/.env` with mode 600, leaving no copy in the home directory (`deploy-docker-app.sh`, VC-657) and passes it to `docker compose --env-file` (`deploy-docker-app.sh:105-106`). Contents by name after this PR: `BUCKET_*` (five), `DATABASE_*` (five), `DB_*` (five, mapped), `SITE_NAME`, `SITE_URL`, `EXISTING_SITE`, `UPDATE_CODE`, plus `SAH_CRM_BRANCH`, which the deploy workflow appends itself (not from Secrets Manager; VC-655). The compose file forwards the `DB_*`, `SITE_*`, `EXISTING_SITE`, `BUCKET_*` and `SAH_CRM_BRANCH` values into the `frappe` container as process environment (`docker/docker-compose.yml:24-51`); `DATABASE_*` and `UPDATE_CODE` stay in the file only.
 
 Who can read those values on the box:
 
@@ -458,12 +458,12 @@ Each is outside this PR. Raise one ticket per line unless already covered.
 - `linters.yml` and `labeller.yml`: pin actions to commits, add `permissions:` (upstream files).
 - `generate-env-file.sh:60` and `fetch-aws-secrets.sh:78` still use `IFS='=' read`; no live impact today (the python branch is the one that runs) but the jq fallback would strip a trailing `=`.
 - `rm -f ~/.ssh/lightsail_key` and `~/.aws/credentials` in the Cleanup step (hosted runners are ephemeral, so this is hygiene only).
-- `deploy-docker-app.sh` prints `docker compose logs --tail=50` on every deploy and `remote/verify-site.sh` prints `--tail=100` on failure; container stdout reaches the public log, and the container holds `DB_PASSWORD`, `ADMIN_PASSWORD` and `BUCKET_SECRET_ACCESS_KEY` in its environment. Masking covers exact values only. Decide whether to keep those log dumps on a public repository.
+- `deploy-docker-app.sh` prints `docker compose logs --tail=50` on every deploy and `remote/verify-site.sh` prints `--tail=100` on failure; container stdout reaches the public log, and the container holds `DB_PASSWORD`, `ADMIN_PASSWORD` and `BUCKET_SECRET_ACCESS_KEY` in its environment. Masking covers exact values only. Decide whether to keep those log dumps on a public repository. **Resolved by VC-657:** neither script prints container logs any more; on a failed check `verify-site.sh` writes them to `/var/log/erp-deploy/last-failure.log` on the box (dir 0700, file 0600, root).
 - `source secrets.env` in every consuming step shell-interprets values; a value containing a space, `;` or `$(` would execute and print a fragment. Quote values in `fetch-aws-secrets.sh` (`shlex.quote`) and reject multi-line values there (only the first line of a multi-line value is masked).
 - `sync-repo.test.sh` leaves its temporary fixture directories behind on each run (pre-existing; harmless on ephemeral runners).
 - Decide whether CODEOWNERS should also cover `*` (application code that runs in production) or whether the one-approval ruleset is enough for `hrms/`.
 - Host key trust: replace `ssh-keyscan` plus `accept-new` with pinned host keys in the secret.
-- `chmod 600` on `/home/ubuntu/.env` at copy time, or write it under `/opt/app` only.
+- ~~`chmod 600` on `/home/ubuntu/.env` at copy time, or write it under `/opt/app` only.~~ Done in VC-657 (see row 22).
 - Confirm the IAM policy on each static deploy user is limited to `secretsmanager:GetSecretValue` on its one ARN.
 - Apply the same review to `SAH-Diagnostics/sah_crm`.
 

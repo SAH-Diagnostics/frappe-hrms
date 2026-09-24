@@ -112,7 +112,7 @@ jobs:
           # request through nginx -- not merely that containers started. Empty when
           # CERTBOT_DOMAIN is unset, in which case the script falls back to localhost.
           export HEALTHCHECK_URL="${CERTBOT_DOMAIN:+https://$CERTBOT_DOMAIN}"
-          # Only ever true on a manual re-run where someone reviewed the printed diff.
+          # Only ever true on a manual re-run where someone reviewed the full diff on the box.
           export ALLOW_DIRTY="${{ inputs.allow_dirty || false }}"
           export HEALTHCHECK_TIMEOUT="${HEALTHCHECK_TIMEOUT:-900}"
           .github/scripts/deploy-docker-app.sh \

@@ -2,7 +2,7 @@ name: Deployment controls
 
 # Deliberately no `paths:` filter: this job is a required status check, and a required
 # check that is skipped by a path filter leaves the PR stuck on "Expected" rather than
-# passing. The two scripts run in seconds, so running them on every PR costs nothing.
+# passing. These checks run in seconds, so running them on every PR costs nothing.
 on:
   pull_request:
   push:
@@ -19,6 +19,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Full history: the anti-vacuity controls in init-db-probe, sync-files-to-s3 and
+          # verify-site read pre-fix versions from git (origin/main, a pinned SHA), and treat
+          # a missing ref as a failure, not a skip.
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Deployment controls
         run: bash .github/scripts/__tests__/deployment-controls.test.sh
@@ -31,3 +37,15 @@ jobs:
 
       - name: 2FA boot wiring (init.sh, env file, compose)
         run: bash docker/__tests__/init-2fa-policy.test.sh
+
+      - name: Site-detection probe and DB password handling (init.sh)
+        run: bash docker/__tests__/init-db-probe.test.sh
+
+      - name: S3 file-sync keeps keys off argv (sync-files-to-s3.sh)
+        run: bash scripts/__tests__/sync-files-to-s3.test.sh
+
+      - name: Post-deploy check keeps container logs out of the job log (verify-site.sh)
+        run: bash .github/scripts/__tests__/verify-site.test.sh
+
+      - name: Env-file upload does not keep an old file mode (copy-file-to-instance.sh)
+        run: bash .github/scripts/__tests__/copy-file-to-instance.test.sh
