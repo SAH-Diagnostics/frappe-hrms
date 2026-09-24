@@ -143,7 +143,9 @@ def main(argv):
 	frappe.connect()
 	try:
 		changes = apply_policy(frappe, policy)
-		frappe.db.commit()
+		# Standalone boot script, not a request or job: Frappe never auto-commits here, so the
+		# policy is lost unless committed explicitly (rolled back below on any failure).
+		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	except PolicyError as e:
 		frappe.db.rollback()
 		print(f"2FA policy error: {e}", file=sys.stderr)
