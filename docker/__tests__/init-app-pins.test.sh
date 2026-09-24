@@ -226,6 +226,22 @@ check_image_pin() { # service-ish grep key, human name
 }
 check_image_pin "redis" "redis"
 check_image_pin "frappe/bench" "bench base image"
+
+# A version tag is necessary but NOT sufficient, and frappe/bench is the proof. Its v5.31.0 tag
+# was RELEASED on 2026-06-16 but the image behind it was rebuilt and re-pushed on 2026-09-24 --
+# the same tag, a different image. Docker Hub reports the push date, and it moved. So "pinned to
+# a version tag" does not mean "we can say which image ran", which is exactly what AC #1 asks for.
+#
+# Pinning tag@digest keeps the tag readable for a human and makes the reference immutable. It also
+# means OS patches arrive only when somebody bumps it deliberately -- which is the behaviour the
+# 14-day standard in the process document requires, rather than a silent refresh nobody records.
+# Dependabot's docker-compose ecosystem understands this form and bumps both halves together.
+bench_line="$(grep -E "^[[:space:]]*image:[[:space:]]*frappe/bench" "$COMPOSE_YML" || true)"
+if grep -qE '@sha256:[0-9a-f]{64}[[:space:]]*$' <<<"$bench_line"; then
+    ok "bench base image is pinned by digest, so the tag cannot be rebuilt under us"
+else
+    bad "bench base image has no @sha256 digest; its tag is mutable and was re-pushed in place"
+fi
 echo
 
 # ---------------------------------------------------------------------------

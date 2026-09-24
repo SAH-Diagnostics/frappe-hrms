@@ -24,7 +24,7 @@ services:
     restart: unless-stopped
 
   frappe:
-    image: frappe/bench:v5.28.0
+    image: frappe/bench:v5.31.0@sha256:6968600ad6524a150ee6cf2e1e58faa93932000565946abf1795c7f268751409
     restart: unless-stopped
     command: bash /workspace/init.sh
     environment:
