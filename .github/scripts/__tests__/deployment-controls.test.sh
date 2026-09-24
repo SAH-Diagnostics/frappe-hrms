@@ -33,6 +33,8 @@
 #   T9  CODEOWNERS names only current SAH reviewers and covers the deploy-relevant paths
 #   T10 setup-aws-cli.sh no longer prints the AWS account id / IAM ARN into the public log
 #   T11 generate-env-file.sh no longer writes the deploy-scope AWS keys onto the box
+#   T12 the sah_crm branch is chosen per environment by its deploy workflow and reaches the
+#       container through compose, so promoting staging to main cannot ship staging's value
 #
 # REPO_ROOT can be overridden to run the same assertions against another checkout, which is
 # how red-on-base and mutation runs are produced. Nothing here touches a network or AWS.
@@ -343,6 +345,44 @@ if require_file T11 "$path"; then
         count="$(printf '%s\n' "$block" | grep -cF "\"$var\"")"
         check "T11 generate-env-file.sh: REQUIRED_VARS lacks \"$var\"" 0 "$count"
     done
+fi
+echo
+
+# ---------------------------------------------------------------------------
+echo "T12: each deploy workflow picks its own sah_crm branch and it reaches the container"
+# init.sh is promoted from staging to main unchanged, so a branch literal there would ship
+# staging's sah_crm to production. The value must come from the environment's own workflow.
+for pair in "deploy-prod.yml:main" "deploy-staging.yml:staging" "deploy-dev.yml:staging"; do
+    wf="${pair%%:*}"; want="${pair##*:}"
+    path="$WORKFLOW_DIR/$wf"
+    require_file T12 "$path" || continue
+    lines="$(lf "$path" | grep -E '^[[:space:]]*echo "SAH_CRM_BRANCH=' || true)"
+    check "T12 $wf: writes SAH_CRM_BRANCH exactly once" 1 "$(printf '%s' "$lines" | grep -c 'SAH_CRM_BRANCH=')"
+    check "T12 $wf: SAH_CRM_BRANCH is $want" "echo \"SAH_CRM_BRANCH=$want\" >> \"\${{ github.workspace }}/.env\"" "$(printf '%s' "$lines" | sed -E 's/^[[:space:]]+//')"
+    # generate-env-file.sh truncates .env, and the next step ships it to the box, so the line only
+    # counts if it runs after the generator and inside the same step.
+    placement="$(lf "$path" | awk '
+        /generate-env-file\.sh/ && !gen { gen = NR }
+        gen && !next_step && NR > gen && /^[[:space:]]*- name:/ { next_step = NR }
+        /echo "SAH_CRM_BRANCH=/ { echo_at = NR }
+        END { print ((gen && echo_at > gen && (!next_step || echo_at < next_step)) ? "in-step" : "misplaced") }
+    ')"
+    check "T12 $wf: SAH_CRM_BRANCH is appended after generate-env-file.sh, in the same step" in-step "$placement"
+done
+path="$REPO_ROOT/docker/docker-compose.yml"
+if require_file T12 "$path"; then
+    check "T12 docker-compose.yml: passes SAH_CRM_BRANCH through, falling back to main" 1 \
+        "$(lf "$path" | grep -cE '^[[:space:]]+- SAH_CRM_BRANCH=\$\{SAH_CRM_BRANCH:-main\}$')"
+fi
+path="$REPO_ROOT/docker/init.sh"
+if require_file T12 "$path"; then
+    check "T12 init.sh: SAH_CRM_BRANCH falls back to main, not a promoted staging literal" 1 \
+        "$(lf "$path" | grep -cE '^SAH_CRM_BRANCH="\$\{SAH_CRM_BRANCH:-main\}"$')"
+    check "T12 init.sh: nothing else assigns SAH_CRM_BRANCH" 1 \
+        "$(lf "$path" | grep -cE '^[[:space:]]*(export[[:space:]]+)?SAH_CRM_BRANCH=')"
+    # Without this the three checks above would pass against a clone that ignores the variable.
+    check "T12 init.sh: the sah_crm clone uses \$SAH_CRM_BRANCH" 1 \
+        "$(lf "$path" | grep -cE 'bench get-app "\$SAH_CRM_REPO" --branch "\$SAH_CRM_BRANCH"')"
 fi
 echo
 

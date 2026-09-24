@@ -38,6 +38,8 @@ services:
       - RDS_DB_NAME=${RDS_DB_NAME:-${DB_NAME:-}}
       # Developer mode must stay OFF in staging/production; only local dev opts in via docker/.env
       - DEVELOPER_MODE=${DEVELOPER_MODE:-0}
+      # sah_crm branch to clone; each deploy workflow sets it for its own environment
+      - SAH_CRM_BRANCH=${SAH_CRM_BRANCH:-main}
       # Site name configuration
       - SITE_NAME=${SITE_NAME:-hrms.localhost}
       # Public site URL used for absolute links (emails, password reset, etc.)

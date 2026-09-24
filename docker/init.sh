@@ -125,15 +125,16 @@ bench get-app --branch "$ERPNEXT_REF" erpnext || echo "Warning: Failed to get er
 bench get-app --branch "$HRMS_REF" hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
 SAH_CRM_REPO="${SAH_CRM_REPO:-https://github.com/SAH-Diagnostics/sah_crm}"
-# This branch targets `staging`. SAH_CRM_BRANCH is not passed into the container by
-# docker-compose.yml or generate-env-file.sh, so this literal is the only value that ever
-# applies -- it cannot be overridden from Secrets Manager today.
+# SAH_CRM_BRANCH is set per environment by each deploy workflow (prod `main`, staging and
+# dev `staging`) and passed in through docker-compose.yml. It is deliberately not a literal
+# here: this file is promoted from staging to main unchanged, so a literal would travel with
+# it. The `main` fallback only applies to runs outside the deploy workflows (local compose).
 #
 # sah_crm is deliberately NOT pinned, unlike frappe/erpnext/hrms above. It is our own
 # actively developed app, and the point of tracking a branch here is that a deploy picks up
 # the CRM work that was just merged. The upstream apps are pinned because we do not control
 # their release cadence; this one we do.
-SAH_CRM_BRANCH="${SAH_CRM_BRANCH:-staging}"
+SAH_CRM_BRANCH="${SAH_CRM_BRANCH:-main}"
 bench get-app "$SAH_CRM_REPO" --branch "$SAH_CRM_BRANCH" || echo "Warning: Failed to get sah_crm app (may already exist)"
 
 echo "=== Preparing site: $SITE_NAME ==="
