@@ -52,8 +52,11 @@ services:
     volumes:
       - .:/workspace
     ports:
-      - 8000:8000
-      - 9000:9000
+      # Loopback only (VC-647). nginx on the host proxies 80/443 to these two ports.
+      # Publishing them on 0.0.0.0 lets Docker route internet traffic straight to the
+      # container, bypassing both nginx and the host firewall (ufw never sees it).
+      - 127.0.0.1:8000:8000
+      - 127.0.0.1:9000:9000
     depends_on:
       - redis
       - mariadb
