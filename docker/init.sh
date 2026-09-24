@@ -270,6 +270,20 @@ bench --site "$SITE_NAME" install-app sah_crm || true
 bench --site "$SITE_NAME" set-config developer_mode "$DEVELOPER_MODE_VALUE"
 bench --site "$SITE_NAME" enable-scheduler
 
+# Two-factor authentication is re-asserted on every boot, so a rebuilt instance always comes
+# up with authenticator-app 2FA on. Policy and knobs: docker/configure_2fa.py.
+# Non-fatal on purpose: exiting here would take the whole ERP down. The settings persist in the
+# database, so a failed re-assert keeps whatever policy was last applied -- which, on a site that
+# never had one, means 2FA stays OFF. Check the boot log for "2FA policy applied" after a deploy.
+TWO_FACTOR_POLICY_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/configure_2fa.py"
+apply_two_factor_policy() {
+    echo "=== Applying two-factor authentication policy ==="
+    if ! (cd "$BENCH_DIR/sites" && "$BENCH_DIR/env/bin/python" "$TWO_FACTOR_POLICY_SCRIPT" "$SITE_NAME"); then
+        echo "✗ 2FA policy NOT applied — the site keeps its previous 2FA settings; check the error above" >&2
+    fi
+}
+apply_two_factor_policy
+
 bench --site "$SITE_NAME" clear-cache || true
 bench use "$SITE_NAME" || true
 

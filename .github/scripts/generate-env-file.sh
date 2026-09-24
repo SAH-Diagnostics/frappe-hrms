@@ -50,6 +50,14 @@ REQUIRED_VARS=(
     "UPDATE_CODE"
 )
 
+# Optional variables: passed through when present in the secret, otherwise docker-compose.yml
+# supplies the default
+OPTIONAL_VARS=(
+    "FRAPPE_2FA_ENABLED"
+    "FRAPPE_2FA_ROLES"
+    "FRAPPE_2FA_ISSUER"
+)
+
 
 # Generate .env file with required variables
 echo "Writing environment variables to $OUTPUT_ENV_FILE..."
@@ -82,6 +90,15 @@ for var in "${REQUIRED_VARS[@]}"; do
     echo "${var}=${value}" >> "$OUTPUT_ENV_FILE"
 done
 
+OPTIONAL_WRITTEN=0
+for var in "${OPTIONAL_VARS[@]}"; do
+    value="${SECRETS_MAP[$var]}"
+    if [ -n "$value" ]; then
+        echo "${var}=${value}" >> "$OUTPUT_ENV_FILE"
+        OPTIONAL_WRITTEN=$((OPTIONAL_WRITTEN + 1))
+    fi
+done
+
 # Map DATABASE_* variables to DB_* for docker-compose compatibility
 if [ -n "${SECRETS_MAP[DATABASE_ENDPOINT]}" ]; then
     echo "DB_HOST=${SECRETS_MAP[DATABASE_ENDPOINT]}" >> "$OUTPUT_ENV_FILE"
@@ -100,7 +117,7 @@ if [ -n "${SECRETS_MAP[DATABASE_NAME]}" ]; then
 fi
 
 echo "✓ .env file generated successfully at $OUTPUT_ENV_FILE"
-TOTAL_VARS=$((${#REQUIRED_VARS[@]} + 5))  # +5 for DB_* mapped variables
+TOTAL_VARS=$((${#REQUIRED_VARS[@]} + 5 + OPTIONAL_WRITTEN))  # +5 for DB_* mapped variables
 echo "Total variables written: $TOTAL_VARS"
 
 exit 0
