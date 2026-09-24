@@ -98,13 +98,22 @@ echo "T3: mediums are filtered, withdrawn advisories are ignored, other version 
 # The medium and withdrawn controls have ranges that DO cover the pin, so each can only be
 # excluded by the one rule it tests. The v15-line and lower-bound controls are different: each is
 # excluded by exactly ONE clause of a range conjunction, and between them they pin both halves.
+#
+# The synthetic bounds are SENTINELS (99.x), not realistic versions, and that is deliberate. These
+# controls are calibrated against docker/init.sh's real pins, so a bound chosen just above or just
+# below the pin of the day stops discriminating the moment somebody bumps it. That is not
+# theoretical: `lowerbound-ctl` was written as `>= 16.36.0` when erpnext was pinned v16.35.0, and
+# raising the pin to v16.36.0 walked the real pin straight into the control's own range. The three
+# match-then-filter controls (medium-ctl, closed-ctl, hrms-ctl) had the mirror-image bug waiting at
+# 16.40.0, where they would have stopped matching and "passed" while proving nothing. A bound no
+# real pin can ever reach cannot rot. Do not replace these with plausible-looking versions.
 # (An earlier comment here claimed all three covered the pin. That was false for the v15-line
 # control -- its UPPER bound alone already excludes a v16 pin -- which is why a parser that
 # ignored every lower-bound clause used to pass the whole suite.)
 if has_finding GHSA-0000-medium-ctl; then bad "a MEDIUM was reported; the severity filter is not working"; else ok "medium severity is not reported"; fi
 if has_finding GHSA-0000-closed-ctl; then bad "a withdrawn (state != published) advisory was reported"; else ok "withdrawn advisories are ignored"; fi
 if has_finding GHSA-0000-v15line-ctl; then bad "a v15-line advisory matched a v16 pin; the upper bound is not being applied"; else ok "a '>= 15.0.0, < 15.9.0' range does not match a v16 pin (upper bound)"; fi
-if has_finding GHSA-0000-lowerbound-ctl; then bad "a '>= 16.36.0' advisory matched v16.35.0; LOWER bounds are being ignored"; else ok "a '>= 16.36.0, < 16.40.0' range does not match v16.35.0 (lower bound)"; fi
+if has_finding GHSA-0000-lowerbound-ctl; then bad "a '>= 99.0.0' advisory matched the pin; LOWER bounds are being ignored"; else ok "a '>= 99.0.0, < 99.9.0' range does not match a v16 pin (lower bound)"; fi
 echo
 
 # ---------------------------------------------------------------------------

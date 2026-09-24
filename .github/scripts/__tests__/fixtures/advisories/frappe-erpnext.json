@@ -80,8 +80,8 @@
           "ecosystem": "pip",
           "name": "erpnext"
         },
-        "vulnerable_version_range": "< 16.40.0",
-        "patched_versions": "16.40.0"
+        "vulnerable_version_range": "< 99.0.0",
+        "patched_versions": "99.0.0"
       }
     ]
   },
@@ -116,8 +116,8 @@
           "ecosystem": "pip",
           "name": "erpnext"
         },
-        "vulnerable_version_range": "< 16.40.0",
-        "patched_versions": "16.40.0"
+        "vulnerable_version_range": "< 99.0.0",
+        "patched_versions": "99.0.0"
       }
     ]
   },
@@ -134,7 +134,7 @@
           "ecosystem": "pip",
           "name": "erpnext"
         },
-        "vulnerable_version_range": ">= 16.36.0, < 16.40.0",
+        "vulnerable_version_range": ">= 99.0.0, < 99.9.0",
         "patched_versions": "16.40.0"
       }
     ]

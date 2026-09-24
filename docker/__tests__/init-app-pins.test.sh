@@ -80,7 +80,7 @@ check_pin() { # var, expected
     fi
 }
 check_pin FRAPPE_REF  v16.35.0
-check_pin ERPNEXT_REF v16.35.0
+check_pin ERPNEXT_REF v16.36.0
 check_pin HRMS_REF    v16.20.0
 echo
 

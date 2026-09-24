@@ -97,7 +97,7 @@ export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 # (SAH-root helper/, NOT in this repository -- do not "fix" this into a repo-relative link; that
 # folder holds production IP addresses and security-group ids and this repository is public).
 FRAPPE_REF="${FRAPPE_REF:-v16.35.0}"    # 012667b9c
-ERPNEXT_REF="${ERPNEXT_REF:-v16.35.0}"  # 12cd563fb
+ERPNEXT_REF="${ERPNEXT_REF:-v16.36.0}"  # b30aa5334
 HRMS_REF="${HRMS_REF:-v16.20.0}"        # c0a04b80e
 
 # Initialize bench directory if it does not exist (non-destructive)

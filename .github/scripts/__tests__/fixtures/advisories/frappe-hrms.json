@@ -7,7 +7,7 @@
     "published_at": "2026-01-01T00:00:00Z",
     "summary": "Synthetic medium -- must never be reported",
     "vulnerabilities": [
-      { "package": { "ecosystem": "pip", "name": "hrms" }, "vulnerable_version_range": "< 16.40.0", "patched_versions": "16.40.0" }
+      { "package": { "ecosystem": "pip", "name": "hrms" }, "vulnerable_version_range": "< 99.0.0", "patched_versions": "99.0.0" }
     ]
   }
 ]
