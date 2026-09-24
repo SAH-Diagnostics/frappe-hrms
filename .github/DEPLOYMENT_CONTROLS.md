@@ -99,7 +99,7 @@ Readers of the Secrets Manager secret: the three static IAM users whose keys sit
 
 ### 4.3 On-box environment file
 
-`generate-env-file.sh` writes the file on the runner; the "Transfer environment file" step copies it to `/home/ubuntu/.env` via `scp` (`copy-file-to-instance.sh:48`); the Deploy step copies it to `/opt/app/.env` with mode 600 (`deploy-docker-app.sh:86-87`) and passes it to `docker compose --env-file` (`deploy-docker-app.sh:105-106`). Contents by name after this PR: `BUCKET_*` (five), `DATABASE_*` (five), `DB_*` (five, mapped), `SITE_NAME`, `SITE_URL`, `EXISTING_SITE`, `UPDATE_CODE`. The compose file forwards the `DB_*`, `SITE_*`, `EXISTING_SITE` and `BUCKET_*` values into the `frappe` container as process environment (`docker/docker-compose.yml:24-51`); `DATABASE_*` and `UPDATE_CODE` stay in the file only.
+`generate-env-file.sh` writes the file on the runner; the "Transfer environment file" step copies it to `/home/ubuntu/.env` via `scp` (`copy-file-to-instance.sh:48`); the Deploy step copies it to `/opt/app/.env` with mode 600 (`deploy-docker-app.sh:86-87`) and passes it to `docker compose --env-file` (`deploy-docker-app.sh:105-106`). Contents by name after this PR: `BUCKET_*` (five), `DATABASE_*` (five), `DB_*` (five, mapped), `SITE_NAME`, `SITE_URL`, `EXISTING_SITE`, `UPDATE_CODE`, plus `SAH_CRM_BRANCH`, which the deploy workflow appends itself (not from Secrets Manager; VC-655). The compose file forwards the `DB_*`, `SITE_*`, `EXISTING_SITE`, `BUCKET_*` and `SAH_CRM_BRANCH` values into the `frappe` container as process environment (`docker/docker-compose.yml:24-51`); `DATABASE_*` and `UPDATE_CODE` stay in the file only.
 
 Who can read those values on the box:
 

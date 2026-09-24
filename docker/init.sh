@@ -138,9 +138,10 @@ bench get-app --branch "$ERPNEXT_REF" erpnext || echo "Warning: Failed to get er
 bench get-app --branch "$HRMS_REF" hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
 SAH_CRM_REPO="${SAH_CRM_REPO:-https://github.com/SAH-Diagnostics/sah_crm}"
-# This branch targets `staging`. SAH_CRM_BRANCH is not passed into the container by
-# docker-compose.yml or generate-env-file.sh, so this literal is the only value that ever
-# applies -- it cannot be overridden from Secrets Manager today.
+# SAH_CRM_BRANCH is set per environment by each deploy workflow (prod `main`, staging and
+# dev `staging`) and passed in through docker-compose.yml. It is deliberately not a literal
+# here: this file is promoted from staging to main unchanged, so a literal would travel with
+# it. The `main` fallback only applies to runs outside the deploy workflows (local compose).
 #
 # sah_crm is deliberately NOT pinned, unlike frappe/erpnext/hrms above. It is our own
 # actively developed app, and the point of tracking a branch here is that a deploy picks up
@@ -151,11 +152,7 @@ SAH_CRM_REPO="${SAH_CRM_REPO:-https://github.com/SAH-Diagnostics/sah_crm}"
 # sah_crm repository has zero tags. Cutting a release tag there is tracked as a follow-up;
 # until then the deploy records the resolved SHA below so a rebuild is at least auditable
 # after the fact, which is what the 14-day process needs from it.
-#
-# NOTE for the staging->main cutover: this literal differs by branch -- `main` sets `main`,
-# `staging` sets `staging`. The merge silently picks one, changing the source branch of a
-# production application. Resolve it deliberately and record which was chosen.
-SAH_CRM_BRANCH="${SAH_CRM_BRANCH:-staging}"
+SAH_CRM_BRANCH="${SAH_CRM_BRANCH:-main}"
 bench get-app "$SAH_CRM_REPO" --branch "$SAH_CRM_BRANCH" || echo "Warning: Failed to get sah_crm app (may already exist)"
 
 # Record the resolved sah_crm commit. It is branch-tracked, so this line is the only record of

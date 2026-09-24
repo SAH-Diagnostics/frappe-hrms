@@ -46,6 +46,9 @@ jobs:
           .github/scripts/generate-env-file.sh \
             "${{ github.workspace }}/secrets.env" \
             "${{ github.workspace }}/.env"
+          # Per-environment by design (VC-655): the workflow, not the promoted init.sh, picks
+          # the sah_crm branch, so a staging -> main promotion cannot carry staging's value.
+          echo "SAH_CRM_BRANCH=staging" >> "${{ github.workspace }}/.env"
 
       - name: Allow this runner to reach SSH (VC-647)
         # SSH is restricted at the Lightsail firewall to approved addresses. Grant this
