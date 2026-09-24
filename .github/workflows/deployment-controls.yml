@@ -1,0 +1,27 @@
+name: Deployment controls
+
+# Deliberately no `paths:` filter: this job is a required status check, and a required
+# check that is skipped by a path filter leaves the PR stuck on "Expected" rather than
+# passing. The two scripts run in seconds, so running them on every PR costs nothing.
+on:
+  pull_request:
+  push:
+    branches: [staging, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deployment-controls:
+    name: deployment-controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Deployment controls
+        run: bash .github/scripts/__tests__/deployment-controls.test.sh
+
+      - name: Remote sync preflight
+        run: bash .github/scripts/__tests__/sync-repo.test.sh
