@@ -6,7 +6,6 @@ on:
       - staging
     paths:
       - 'nginx/**'
-      - '.github/workflows/configure-nginx-staging.yml'
   workflow_dispatch:
 
 permissions:

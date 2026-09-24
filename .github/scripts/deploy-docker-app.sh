@@ -82,8 +82,12 @@ fi
 echo "✓ Using Docker Compose plugin"
 docker compose version
 
-echo "=== Copying .env file ==="
-cp $ENV_FILE_SOURCE $DEPLOY_DIR/.env
+echo "=== Installing .env file ==="
+# Move, not copy: a copy left the secrets behind in the upload path (the user's home) after
+# every deploy. umask 077 keeps anything this shell creates owner-only; chmod 600 fixes the
+# mode of the moved file, which keeps whatever mode scp gave it (VC-657).
+umask 077
+mv -f $ENV_FILE_SOURCE $DEPLOY_DIR/.env
 chmod 600 $DEPLOY_DIR/.env
 
 echo "=== Fixing Docker volume permissions ==="
@@ -109,8 +113,10 @@ echo "=== Verifying containers ==="
 sleep 5
 sudo docker compose -f $DOCKER_COMPOSE_FILE ps
 
-echo "=== Container logs (last 50 lines) ==="
-sudo docker compose -f $DOCKER_COMPOSE_FILE logs --tail=50
+# Container logs are NOT printed: this job's output is a public Actions log, and bench /
+# init.sh output can carry credentials. On a failed verification, verify-site.sh writes them
+# to a root-only file on the box instead (VC-657).
+echo "Container logs are not echoed here; read them on the box with 'sudo docker compose logs'."
 
 echo "✓ Containers started"
 EOF

@@ -6,7 +6,6 @@ on:
       - develop
     paths:
       - 'nginx/**'
-      - '.github/workflows/configure-nginx-dev.yml'
   workflow_dispatch:
 
 permissions:

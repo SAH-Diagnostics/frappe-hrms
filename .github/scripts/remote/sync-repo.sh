@@ -21,8 +21,13 @@
 #   * clean tree                      -> reset (a no-op)
 #   * dirty, content equals target    -> reset; the edits were the target commit applied
 #                                        by hand, so nothing is lost. This is the prod case.
-#   * dirty, content differs          -> ABORT and print the diff, unless ALLOW_DIRTY=true.
-#                                        A human decides; the deploy does not guess.
+#   * dirty, content differs          -> ABORT and print a diff SUMMARY (--stat), unless
+#                                        ALLOW_DIRTY=true. A human decides; the deploy does
+#                                        not guess.
+#
+# Only `git diff --stat` (file names and line counts) is ever printed, never the diff body:
+# this output lands in a public Actions log, and a hand-edit on the box can be a secret
+# (an .env, a site_config.json). Operators review the full diff ON the box (VC-657).
 #
 # `git clean -fd` is deliberately NOT run. Untracked files are never overwritten by a reset,
 # so they are not a correctness risk, and on both boxes the untracked `*.bak` files are the
@@ -77,15 +82,16 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     elif [ "$ALLOW_DIRTY" = "true" ]; then
         echo
         echo "WARNING: local edits differ from $TARGET_REF and ALLOW_DIRTY=true was set."
-        echo "They will be discarded. Diff (working tree -> target):"
-        git --no-pager diff "$TARGET_SHA" -- || true
+        echo "They will be discarded. Diff summary (working tree -> target):"
+        git --no-pager diff --stat "$TARGET_SHA" -- || true
     else
         echo
         echo "FATAL: the working tree differs from $TARGET_REF and ALLOW_DIRTY was not set." >&2
         echo "Refusing to continue: these edits describe what this box is actually running," >&2
         echo "and discarding them unreviewed would destroy the only record of it." >&2
-        echo "Review the diff below, then re-run with ALLOW_DIRTY=true to discard it." >&2
-        git --no-pager diff "$TARGET_SHA" -- >&2 || true
+        echo "Review the full diff ON the box (git -C $DEPLOY_DIR diff $TARGET_SHA), then re-run" >&2
+        echo "with ALLOW_DIRTY=true to discard it. Diff summary (working tree -> target):" >&2
+        git --no-pager diff --stat "$TARGET_SHA" -- >&2 || true
         exit 1
     fi
 fi
