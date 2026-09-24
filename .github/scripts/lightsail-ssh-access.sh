@@ -175,11 +175,11 @@ apply_port_infos() {
 show_public_ports() {
     echo "Public ports now in force at the Lightsail firewall (sources counted, not listed):"
     aws lightsail get-instance-port-states --instance-name "$1" --output json 2>/dev/null \
-        | python3 -c 'import json,sys
+        | python3 -c 'import json, sys
 for s in sorted(json.load(sys.stdin).get("portStates", []), key=lambda s: s["fromPort"]):
     v4, v6 = s.get("cidrs") or [], s.get("ipv6Cidrs") or []
     scope = "OPEN TO ALL" if "0.0.0.0/0" in v4 or "::/0" in v6 else "restricted"
-    print(f"  {s[\"fromPort\"]}-{s[\"toPort\"]}/{s[\"protocol\"]}: {scope}, {len(v4)} IPv4 source(s), {len(v6)} IPv6 source(s)")' \
+    print("  %s-%s/%s: %s, %d IPv4 source(s), %d IPv6 source(s)" % (s["fromPort"], s["toPort"], s["protocol"], scope, len(v4), len(v6)))' \
         || echo "(could not read port states)"
 }
 
