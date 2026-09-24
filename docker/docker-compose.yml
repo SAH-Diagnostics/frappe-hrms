@@ -14,11 +14,17 @@ services:
       - mariadb-data:/var/lib/mysql
 
   redis:
-    image: redis:alpine
+    # Pinned for RECORDABILITY, not to change behaviour: `redis:alpine` and `8.10.2-alpine`
+    # resolve to the same digest today (sha256:2d3814be...), so this is a no-op at deploy time.
+    # `alpine` is a moving tag -- it was pushed 2026-09-21 and will move again -- which means the
+    # running Redis version cannot be *recorded*, and an unrecordable version cannot be evidenced
+    # against a 14-day patch standard. Bump this deliberately; see
+    # helper/docs/erp-patch-and-dependency-process.md (SAH-root helper/, not in this repo).
+    image: redis:8.10.2-alpine
     restart: unless-stopped
 
   frappe:
-    image: frappe/bench:v5.28.0
+    image: frappe/bench:v5.31.0@sha256:6968600ad6524a150ee6cf2e1e58faa93932000565946abf1795c7f268751409
     restart: unless-stopped
     command: bash /workspace/init.sh
     environment:
@@ -53,6 +59,10 @@ services:
       - BUCKET_REGION=${BUCKET_REGION:-eu-west-2}
       - BUCKET_ENDPOINT=${BUCKET_ENDPOINT:-}
       - FILES_BACK_UP_HOURS=${FILES_BACK_UP_HOURS:-}
+      # Two-factor authentication policy (docker/configure_2fa.py); defaults enforce OTP-app 2FA for all users
+      - FRAPPE_2FA_ENABLED=${FRAPPE_2FA_ENABLED:-1}
+      - FRAPPE_2FA_ROLES=${FRAPPE_2FA_ROLES:-All}
+      - FRAPPE_2FA_ISSUER=${FRAPPE_2FA_ISSUER:-SAH ERP}
     working_dir: /home/frappe
     volumes:
       - .:/workspace
