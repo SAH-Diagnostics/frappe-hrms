@@ -28,7 +28,9 @@
 #   helper/docs/erp-patch-and-dependency-process.md  (SAH-root helper/, not in this repo)
 #
 # NOT COVERED BY THIS FILE -- tracked as separate work, named here so the gap is not silent:
-#   - the sah_crm repository, which needs its own dependabot.yml
+#   - the sah_crm repository, which needs its own dependabot.yml. Note its pyproject.toml declares
+#     `dependencies = []`, so a Dependabot config there would watch nothing today; its real exposure
+#     is the Frappe framework it runs inside, covered by the advisory check below
 #   - the host OS on the Lightsail boxes (unattended-upgrades / manual `apt`)
 #   - the RDS engine and its pending `system-update` maintenance actions
 #   - end-user devices, browsers and firmware
