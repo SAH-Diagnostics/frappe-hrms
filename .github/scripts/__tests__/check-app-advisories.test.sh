@@ -512,6 +512,57 @@ PYEOF
 fi
 echo
 
+echo "T18: the fire drill proves the alert fires, and cannot be mistaken for the live result"
+# AC #4. A detection control never seen to fire is indistinguishable from one that cannot fire:
+# the scheduled run is EXPECTED to find nothing, so on a good day it proves only that the job is
+# green -- which is what a silently broken checker looks like too.
+#
+# The drill therefore inverts the pass condition: a finding is a PASS. The assertions below guard
+# the two ways that could go wrong -- the inversion being dropped (so a drill that fails to fire
+# reports success), and the drill leaking into the live evidence.
+if [ ! -f "$WF" ]; then
+    bad "workflow not found at $WF"
+else
+    if grep -q 'name: Fire drill' "$WF"; then
+        ok "the workflow carries a fire-drill step"
+    else
+        bad "no fire-drill step; AC #4 has no repeatable exercise"
+    fi
+
+    drill_block="$(awk '/^      - name: Fire drill/{f=1} /^      - name: Record the drill/{f=0} f' "$WF")"
+
+    # Gated: manual dispatch AND a non-empty version list. Otherwise a scheduled run would drill.
+    if printf '%s' "$drill_block" | grep -q "github.event_name == 'workflow_dispatch'" \
+       && printf '%s' "$drill_block" | grep -q "inputs.drill_versions != ''"; then
+        ok "the drill runs only on a manual dispatch that supplies versions"
+    else
+        bad "the drill is not gated on dispatch+versions; a scheduled run could drill instead of checking"
+    fi
+
+    # The inversion is the whole point. Without it the drill passes when the alarm stays silent.
+    # shellcheck disable=SC2016  # single quotes are deliberate: $status must stay literal in the pattern
+    if printf '%s' "$drill_block" | grep -qE 'if \[ "\$status" -eq 1 \]'; then
+        ok "a finding (exit 1) is the drill's PASS condition -- the inversion is present"
+    else
+        bad "the drill does not invert on exit 1; a drill that failed to fire would report success"
+    fi
+
+    # Live evidence must stay live evidence.
+    if printf '%s' "$drill_block" | grep -q 'advisory-report.txt'; then
+        bad "the drill writes to advisory-report.txt; the 90-day evidence artifact would carry drill output"
+    else
+        ok "the drill writes to its own file, so the live artifact keeps meaning what it says"
+    fi
+
+    # It must not mutate the real pins -- a later step reads them.
+    if printf '%s' "$drill_block" | grep -qE '>[[:space:]]*docker/init\.sh|sed -i.*docker/init\.sh'; then
+        bad "the drill writes to docker/init.sh; it would corrupt the pins the live check reads"
+    else
+        ok "the drill uses a throwaway pin file and leaves docker/init.sh alone"
+    fi
+fi
+echo
+
 echo "-----------------------------------------"
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]

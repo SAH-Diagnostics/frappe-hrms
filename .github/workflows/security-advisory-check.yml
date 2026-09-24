@@ -48,6 +48,10 @@ on:
         description: 'Days allowed before a high/critical advisory is overdue'
         required: false
         default: '14'
+      drill_versions:
+        description: 'FIRE DRILL (AC #4). Three comma-separated tags -- frappe,erpnext,hrms -- to check INSTEAD of the pins, proving the alert path still fires. e.g. v16.29.0,v16.30.0,v16.15.0. Leave blank for a normal run.'
+        required: false
+        default: ''
 
   # Re-check whenever the pins move. A pull request that raises or lowers a version is exactly the
   # moment the answer changes, and it is far cheaper to learn it in review than on a schedule
@@ -174,6 +178,84 @@ jobs:
       # If that mapping should not be public at all, the fix is not an issue policy: it is to
       # print only counts and the exit status here and keep the detail out of the repository.
       # That is a decision for whoever owns the process, not a default this file should pick.
+
+      # ---------------------------------------------------------------------------------------
+      # AC #4 -- the fire drill.
+      #
+      # A detection control that has never been seen to fire is indistinguishable from one that
+      # cannot. The scheduled run above is expected to find nothing, so on a good day it proves
+      # only that the job is green -- which is exactly what a silently broken checker also looks
+      # like. This step exists so the alert path can be exercised on demand, against versions
+      # known to be vulnerable, and the result kept as evidence.
+      #
+      # The drill INVERTS the pass condition: a finding (exit 1) is a PASS, because the point is to
+      # see the alarm sound. A clean result means the alarm did not sound for versions that carry
+      # known critical advisories, which is the failure this whole workflow exists to catch.
+      #
+      # It cannot be mistaken for the live answer: it runs only on a manual dispatch that supplies
+      # versions, writes to a separate file, and labels every line of its summary as a drill. It
+      # never touches advisory-report.txt, so the artifact keeps meaning what it says.
+      - name: Fire drill -- prove the alert path still fires
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.drill_versions != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRILL: ${{ inputs.drill_versions }}
+          SLA_DAYS: ${{ inputs.sla_days || '14' }}
+        run: |
+          set -euo pipefail
+
+          IFS=',' read -r F E H <<< "$DRILL"
+          F="$(echo "${F:-}" | tr -d '[:space:]')"
+          E="$(echo "${E:-}" | tr -d '[:space:]')"
+          H="$(echo "${H:-}" | tr -d '[:space:]')"
+          if [ -z "$F" ] || [ -z "$E" ] || [ -z "$H" ]; then
+            echo "drill_versions needs exactly three comma-separated tags: frappe,erpnext,hrms" >&2
+            exit 1
+          fi
+
+          # A throwaway pin file. The checker reads pins from an init.sh by regex, so the drill
+          # feeds it one rather than mutating the real docker/init.sh -- nothing on disk that a
+          # later step reads is touched.
+          printf 'FRAPPE_REF="${FRAPPE_REF:-%s}"\nERPNEXT_REF="${ERPNEXT_REF:-%s}"\nHRMS_REF="${HRMS_REF:-%s}"\n' \
+            "$F" "$E" "$H" > drill-init.sh
+
+          set +e
+          node .github/scripts/check-app-advisories.mjs --sla-days "$SLA_DAYS" --init drill-init.sh 2>&1 | tee drill-report.txt
+          status=${PIPESTATUS[0]}
+          set -e
+
+          {
+            echo '## Fire drill (AC #4) -- NOT the live status'
+            echo
+            echo "Versions checked: frappe \`$F\` · erpnext \`$E\` · hrms \`$H\`"
+            echo
+            case "$status" in
+              1) echo '**DRILL PASSED.** The checker found high/critical advisories against these versions, so the alert path fires end to end: live API -> version comparison -> non-zero exit -> failed job -> retained artifact.' ;;
+              0) echo '**DRILL FAILED.** No finding was reported for versions that were chosen because they are vulnerable. The detection control is not working -- investigate before trusting any green run above.' ;;
+              *) echo "**DRILL INCONCLUSIVE** (exit $status). The checker could not complete, so the drill proves nothing either way." ;;
+            esac
+            echo
+            echo '```'
+            cat drill-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Invert: a finding is the expected outcome.
+          if [ "$status" -eq 1 ]; then
+            echo "drill passed: the alert fired as intended"
+          else
+            echo "drill did NOT fire (exit $status) -- failing the job" >&2
+            exit 1
+          fi
+
+      - name: Record the drill as an artifact
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.drill_versions != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: erp-advisory-DRILL-${{ github.run_id }}
+          path: drill-report.txt
+          retention-days: 90
+          if-no-files-found: warn
 
       - name: Record the report as an artifact
         # Runs even on failure -- the failing run is the one whose output is worth keeping, and a
