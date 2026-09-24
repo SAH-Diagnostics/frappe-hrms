@@ -51,6 +51,10 @@ services:
       - BUCKET_REGION=${BUCKET_REGION:-eu-west-2}
       - BUCKET_ENDPOINT=${BUCKET_ENDPOINT:-}
       - FILES_BACK_UP_HOURS=${FILES_BACK_UP_HOURS:-}
+      # Two-factor authentication policy (docker/configure_2fa.py); defaults enforce OTP-app 2FA for all users
+      - FRAPPE_2FA_ENABLED=${FRAPPE_2FA_ENABLED:-1}
+      - FRAPPE_2FA_ROLES=${FRAPPE_2FA_ROLES:-All}
+      - FRAPPE_2FA_ISSUER=${FRAPPE_2FA_ISSUER:-SAH ERP}
     working_dir: /home/frappe
     volumes:
       - .:/workspace
