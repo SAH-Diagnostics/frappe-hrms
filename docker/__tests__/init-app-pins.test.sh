@@ -250,6 +250,86 @@ else
 fi
 echo
 
+# ---------------------------------------------------------------------------
+echo "T8: the three pins satisfy each other's declared compatibility ranges"
+# Frappe apps declare their inter-app requirements in pyproject.toml under
+# [tool.bench.frappe-dependencies], and `bench get-app` enforces them at INSTALL time. That is
+# too late for us: `sites/` is not a volume, so the install happens during a deploy, and a pin
+# set that cannot satisfy itself fails in the middle of a production rebuild rather than in CI.
+#
+# The constraint is not trivially satisfied, so this is not a formality. erpnext v16.36.0
+# requires frappe >= 16.21.0 -- a floor well inside the v16 line. Bumping erpnext forward while
+# leaving frappe behind, or rolling frappe back on its own, is exactly the plausible mistake, and
+# nothing else in this repository would catch it.
+#
+# RECORDED, NOT FETCHED. The suite is hermetic by design, so the ranges below are a snapshot read
+# from upstream at the pinned tags on 2026-09-24. **Re-read them whenever a pin moves**:
+#
+#   curl -sfL https://raw.githubusercontent.com/frappe/erpnext/$ERPNEXT_REF/pyproject.toml \
+#     | grep -A3 'tool.bench.frappe-dependencies'
+#
+# The limitation is worth stating plainly rather than leaving for someone to discover: these
+# assertions catch a pin that violates the RECORDED range, not a pin bumped to a tag whose real
+# range has moved without the record being updated. Closing that needs a network check; it is a
+# follow-up, not a reason to leave the common case unguarded.
+ver_ge() { # returns 0 if $1 >= $2, comparing numerically (not lexicographically)
+    # `sort | head -1` yields the SMALLER of the two, so "$1 >= $2" means the smaller one is $2.
+    # Writing this the other way round tests "<=", which the self-guard below caught.
+    [ "$(printf '%s\n%s\n' "${1#v}" "${2#v}" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "${2#v}" ] \
+        || [ "${1#v}" = "${2#v}" ]
+}
+ver_lt() { ! ver_ge "$1" "$2"; }
+
+pin_of() { grep -E "^$1=" "$INIT_SH" | sed -E 's/.*:-([^}]*)\}.*/\1/'; }
+FR="$(pin_of FRAPPE_REF)"; EN="$(pin_of ERPNEXT_REF)"; HR="$(pin_of HRMS_REF)"
+
+# Guard the comparator itself first: a broken ver_ge would make every check below pass vacuously,
+# which is the same class of defect as a fixture bound calibrated against the pin of the day.
+if ver_ge "16.21.0" "16.21.0" && ver_ge "16.35.0" "16.21.0" && ver_lt "16.9.0" "16.21.0" \
+   && ver_lt "16.20.0" "16.21.0" && ver_ge "16.36.0" "16.21.0"; then
+    ok "the version comparator is numeric (16.9.0 < 16.21.0 <= 16.35.0)"
+else
+    bad "the version comparator is wrong; every compatibility assertion below is unreliable"
+fi
+
+# erpnext -> frappe:  >= 16.21.0, < 17.0.0   (erpnext v16.36.0 pyproject)
+if ver_ge "$FR" "16.21.0" && ver_lt "$FR" "17.0.0"; then
+    ok "frappe $FR satisfies erpnext's declared range >= 16.21.0, < 17.0.0"
+else
+    bad "frappe $FR does NOT satisfy erpnext's declared frappe range >= 16.21.0, < 17.0.0"
+fi
+
+# hrms -> frappe:  >= 16.0.0, < 17.0.0       (hrms v16.20.0 pyproject)
+if ver_ge "$FR" "16.0.0" && ver_lt "$FR" "17.0.0"; then
+    ok "frappe $FR satisfies hrms's declared range >= 16.0.0, < 17.0.0"
+else
+    bad "frappe $FR does NOT satisfy hrms's declared frappe range >= 16.0.0, < 17.0.0"
+fi
+
+# hrms -> erpnext:  >= 16.0.0, < 17.0.0      (hrms v16.20.0 pyproject)
+if ver_ge "$EN" "16.0.0" && ver_lt "$EN" "17.0.0"; then
+    ok "erpnext $EN satisfies hrms's declared range >= 16.0.0, < 17.0.0"
+else
+    bad "erpnext $EN does NOT satisfy hrms's declared erpnext range >= 16.0.0, < 17.0.0"
+fi
+
+# hrms/hooks.py carries `required_apps = ["frappe/erpnext"]`, so erpnext must actually be
+# installed -- not merely version-compatible. Assert the deploy really clones it.
+if grep -qE 'bench get-app.*erpnext' "$INIT_SH"; then
+    ok "erpnext is installed, as hrms's required_apps = [\"frappe/erpnext\"] demands"
+else
+    bad "hrms requires erpnext but init.sh never clones it"
+fi
+
+# All three must sit on the same major line. Every range above is bounded < 17.0.0, so a mixed
+# major is a guaranteed install failure regardless of which app moved.
+if [ "${FR%%.*}" = "${EN%%.*}" ] && [ "${EN%%.*}" = "${HR%%.*}" ]; then
+    ok "frappe, erpnext and hrms are all on the same major line (${FR%%.*})"
+else
+    bad "mixed major versions: frappe $FR, erpnext $EN, hrms $HR -- every declared range is < 17.0.0"
+fi
+echo
+
 echo "-----------------------------------------"
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]
