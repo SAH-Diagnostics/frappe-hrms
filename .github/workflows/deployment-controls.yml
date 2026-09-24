@@ -25,3 +25,9 @@ jobs:
 
       - name: Remote sync preflight
         run: bash .github/scripts/__tests__/sync-repo.test.sh
+
+      - name: 2FA policy (configure_2fa.py)
+        run: python3 -m unittest discover -s docker/__tests__ -p 'test_*.py'
+
+      - name: 2FA boot wiring (init.sh, env file, compose)
+        run: bash docker/__tests__/init-2fa-policy.test.sh
