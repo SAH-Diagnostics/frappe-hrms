@@ -253,9 +253,27 @@ echo
 # ---------------------------------------------------------------------------
 echo "T8: the three pins satisfy each other's declared compatibility ranges"
 # Frappe apps declare their inter-app requirements in pyproject.toml under
-# [tool.bench.frappe-dependencies], and `bench get-app` enforces them at INSTALL time. That is
-# too late for us: `sites/` is not a volume, so the install happens during a deploy, and a pin
-# set that cannot satisfy itself fails in the middle of a production rebuild rather than in CI.
+# [tool.bench.frappe-dependencies]. That is the only per-release compatibility statement upstream
+# publishes -- there is no version matrix in the Frappe docs, only branch-level alignment
+# (version-16 of each app goes together), which is far too coarse to catch what follows.
+#
+# bench does NOT enforce it. This was verified against bench v5.28.0, the exact image tag
+# docker-compose.yml pins, in bench/app.py:
+#
+#   244  self.validate_app_dependencies()        <- called with no argument
+#   314  def validate_app_dependencies(self, throw=False)
+#   509  if sv.Version(dep_version) not in sv.SimpleSpec(req_version):
+#   510      click.secho("... might not work as expected.", fg="yellow")
+#   516      if throw: sys.exit(1)               <- throw is False here, so no exit
+#
+# A violating pin set therefore does NOT fail the deploy. It installs, prints one yellow line
+# into a deploy log nobody re-reads, and leaves a subtly broken ERP behind. A missing dependency
+# warns the same way, and if get_dep_version() cannot read the installed version the check is
+# skipped in silence.
+#
+# That is the whole reason these assertions exist. If bench aborted, the deploy would fail loudly
+# and CI coverage would be a convenience; because it only warns, this suite is the only thing
+# between a bad bump and a quietly wrong payroll system.
 #
 # The constraint is not trivially satisfied, so this is not a formality. erpnext v16.36.0
 # requires frappe >= 16.21.0 -- a floor well inside the v16 line. Bumping erpnext forward while
