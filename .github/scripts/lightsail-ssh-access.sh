@@ -31,6 +31,11 @@ set -euo pipefail
 # deploy_iam_user), scoped to the instance and applied before SSH is restricted. The dev
 # host is not managed by Terraform, so its deploy user must be granted them by hand.
 #
+# This repository and its Actions logs are public. The script therefore never prints an
+# address: the runner's CIDR and every source address read from the firewall are
+# registered with ::add-mask:: before anything is echoed, and the summary at the end shows
+# ports and source counts only.
+#
 # Exits non-zero when the firewall could not be read or changed. The workflow steps run
 # with continue-on-error so a failure here is visible without aborting the job; the
 # "Test SSH connection" step is what decides whether SSH is actually reachable.
@@ -83,6 +88,19 @@ read_port_states() {
         fail "Could not read the Lightsail firewall (needs lightsail:GetInstancePortStates): $out"
     fi
     echo "$out"
+}
+
+# Register every source address in a port-state JSON file as a masked value, so that
+# nothing later in the log can show it. Must be called from the main flow, where stdout
+# is the log. The "anyone" ranges are left visible: they carry no information.
+mask_addresses_in() {
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        python3 -c 'import json,sys
+for s in json.load(open(sys.argv[1])).get("portStates", []):
+    for c in list(s.get("cidrs") or []) + list(s.get("ipv6Cidrs") or []):
+        if c not in ("0.0.0.0/0", "::/0"):
+            print("::add-mask::" + c)' "$1"
+    fi
 }
 
 # Usage: edit_port_infos add|remove <cidr> <file with get-instance-port-states output>
@@ -152,12 +170,17 @@ apply_port_infos() {
 }
 
 # Printed at the end of every run so the deploy log records the public port list
-# (the ticket's post-deployment check): expect 80, 443 and 22 from approved sources only.
+# (the ticket's post-deployment check): expect 80 and 443 open to all, 22 restricted.
+# Shows source counts, not addresses: this log is public.
 show_public_ports() {
-    echo "Public ports now in force at the Lightsail firewall:"
-    aws lightsail get-instance-port-states --instance-name "$1" \
-        --query 'portStates[].{fromPort:fromPort,toPort:toPort,protocol:protocol,cidrs:cidrs,ipv6Cidrs:ipv6Cidrs,cidrListAliases:cidrListAliases}' \
-        --output json 2>/dev/null || echo "(could not read port states)"
+    echo "Public ports now in force at the Lightsail firewall (sources counted, not listed):"
+    aws lightsail get-instance-port-states --instance-name "$1" --output json 2>/dev/null \
+        | python3 -c 'import json,sys
+for s in sorted(json.load(sys.stdin).get("portStates", []), key=lambda s: s["fromPort"]):
+    v4, v6 = s.get("cidrs") or [], s.get("ipv6Cidrs") or []
+    scope = "OPEN TO ALL" if "0.0.0.0/0" in v4 or "::/0" in v6 else "restricted"
+    print(f"  {s[\"fromPort\"]}-{s[\"toPort\"]}/{s[\"protocol\"]}: {scope}, {len(v4)} IPv4 source(s), {len(v6)} IPv6 source(s)")' \
+        || echo "(could not read port states)"
 }
 
 INSTANCE=$(resolve_instance_name)
@@ -171,8 +194,10 @@ trap 'rm -f "$STATE_FILE"' EXIT
 case "$ACTION" in
     open)
         CIDR=$(detect_runner_cidr) || fail "Could not determine this runner's public IPv4 address"
-        echo "Granting $CIDR access to 22/tcp on the Lightsail instance..."
+        [ -n "${GITHUB_ACTIONS:-}" ] && echo "::add-mask::$CIDR"
+        echo "Granting this runner's address access to 22/tcp on the Lightsail instance..."
         read_port_states "$INSTANCE" > "$STATE_FILE"
+        mask_addresses_in "$STATE_FILE"
         EDITED=$(edit_port_infos add "$CIDR" "$STATE_FILE")
         if [ "$(edit_result "$EDITED")" = "changed" ]; then
             apply_port_infos "$INSTANCE" "$EDITED"
@@ -189,8 +214,10 @@ case "$ACTION" in
         if [ -z "$CIDR" ]; then
             CIDR=$(detect_runner_cidr) || fail "Could not determine this runner's public IPv4 address. Remove the runner's /32 from the SSH rule by hand, or re-apply Terraform, which restores the approved list."
         fi
-        echo "Revoking $CIDR access to 22/tcp on the Lightsail instance..."
+        [ -n "${GITHUB_ACTIONS:-}" ] && echo "::add-mask::$CIDR"
+        echo "Revoking this runner's address from 22/tcp on the Lightsail instance..."
         read_port_states "$INSTANCE" > "$STATE_FILE"
+        mask_addresses_in "$STATE_FILE"
         EDITED=$(edit_port_infos remove "$CIDR" "$STATE_FILE")
         if [ "$(edit_result "$EDITED")" = "changed" ]; then
             apply_port_infos "$INSTANCE" "$EDITED"
