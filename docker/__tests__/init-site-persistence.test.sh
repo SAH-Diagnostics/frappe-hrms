@@ -38,8 +38,10 @@ check() { # description, expected, actual
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-KEY="bG9jYWwtZGV2LW9ubHktZW5jcnlwdGlvbi1rZXktMDA="
-OTHER_KEY="b3RoZXIta2V5LXRoYXQtZW5jcnlwdHMtb2xkLWRhdGE="
+# Generated per run, so no key-shaped literal lives in the repository (the secret scan flags one).
+new_key() { python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"; }
+KEY="$(new_key)"
+OTHER_KEY="$(new_key)"
 
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/sudo" <<'STUB'
