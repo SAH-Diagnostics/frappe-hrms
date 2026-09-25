@@ -628,6 +628,8 @@ if require_file T17 "$path"; then
     else
         fail "T17 deploy-docker-app.sh: seed ($seed_line) does not run before compose down ($down_line)"
     fi
+    check "T17 deploy-docker-app.sh: the seed gets </dev/null, not the heredoc's stdin" 1 \
+        "$(lf "$path" | grep -cE 'remote/seed-site-volume\.sh .*< /dev/null[[:space:]]*$')"
 fi
 seed="$REPO_ROOT/.github/scripts/remote/seed-site-volume.sh"
 if require_file T17 "$seed"; then
@@ -643,6 +645,8 @@ STUB
     cat > "$t17_dir/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$T17_LOG"
+# Like the real `compose run`, every run reads stdin; only the tar stream should be given any.
+case "$*" in *" run "*"tar -x"*) ;; *" run "*) cat > /dev/null ;; esac
 case "$*" in
     *" ps -q frappe"*) [ -n "${NO_CONTAINER:-}" ] || echo cid123 ;;
     "exec cid123 test -L "*) [ -n "${LINKED:-}" ] ;;
@@ -658,7 +662,7 @@ STUB
     run_seed() { # $1 = scenario name; env from the caller
         : > "$t17_dir/$1.log"
         T17_LOG="$t17_dir/$1.log" PATH="$t17_dir/bin:$PATH" \
-            bash "$seed" "$t17_dir/deploy" docker/docker-compose.yml > "$t17_dir/$1.out" 2>&1
+            bash "$seed" "$t17_dir/deploy" docker/docker-compose.yml < /dev/null > "$t17_dir/$1.out" 2>&1
         echo $?
     }
     check "T17 seed: first deploy exits 0" 0 "$(run_seed fresh)"
@@ -670,6 +674,12 @@ STUB
     check "T17 seed: no running container -> exits 0, copies nothing" "0 0" "$(NO_CONTAINER=1 run_seed none) $(grep -c '^cp ' "$t17_dir/none.log")"
     check "T17 seed: container already on the volume -> copies nothing" "0 0" "$(LINKED=1 run_seed linked) $(grep -c '^cp ' "$t17_dir/linked.log")"
     check "T17 seed: volume already holds the site -> never overwritten" "0 0" "$(VOLUME_HAS_SITE=1 run_seed full) $(grep -c '^cp ' "$t17_dir/full.log")"
+    # The deploy runs the seed inside `ssh ... bash -s <<EOF`: stdin is the rest of that script.
+    # A seed that let `compose run` read it skipped compose down/up (staging, 2026-09-25).
+    : > "$t17_dir/heredoc.log"
+    heredoc_out="$(printf 'bash %q %q docker/docker-compose.yml\necho AFTER-SEED\n' "$seed" "$t17_dir/deploy" \
+        | T17_LOG="$t17_dir/heredoc.log" PATH="$t17_dir/bin:$PATH" bash -s 2>&1)"
+    check "T17 seed: leaves the caller's stdin (the deploy heredoc) unread" 1 "$(grep -c '^AFTER-SEED$' <<< "$heredoc_out")"
     rm -rf "$t17_dir"
 fi
 echo

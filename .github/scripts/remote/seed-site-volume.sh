@@ -55,8 +55,11 @@ if ! sudo docker exec "$container" test -d "$SITE_IN_BENCH"; then
     exit 0
 fi
 
-# A throwaway container of the same service mounts the same named volume.
-in_volume() { "${COMPOSE[@]}" run --rm --no-deps -T --user root --entrypoint sh frappe -c "$1"; }
+# A throwaway container of the same service mounts the same named volume. `compose run`
+# forwards stdin, and this script runs inside the deploy's `ssh ... bash -s` heredoc, whose
+# stdin is the rest of that script: only the tar stream may read stdin (into_volume).
+into_volume() { "${COMPOSE[@]}" run --rm --no-deps -T --user root --entrypoint sh frappe -c "$1"; }
+in_volume() { into_volume "$1" < /dev/null; }
 
 if in_volume "test -e '$SITE_IN_VOLUME'"; then
     echo "The volume already holds $SITE_NAME; not overwriting it."
@@ -66,7 +69,7 @@ fi
 for part in public private; do
     if sudo docker exec "$container" test -d "$SITE_IN_BENCH/$part"; then
         sudo docker cp "$container:$SITE_IN_BENCH/$part" - \
-            | in_volume "mkdir -p '$SITE_IN_VOLUME' && tar -x -C '$SITE_IN_VOLUME'"
+            | into_volume "mkdir -p '$SITE_IN_VOLUME' && tar -x -C '$SITE_IN_VOLUME'"
     fi
 done
 in_volume "mkdir -p '$SITE_IN_VOLUME' && chown -R 1000:1000 /home/frappe/site-data"
