@@ -40,8 +40,30 @@ echo "  Deployment Directory: $DEPLOY_DIR"
 echo "  Docker Compose File: $DOCKER_COMPOSE_FILE"
 echo "  Branch: $BRANCH_NAME"
 
-# SSH into instance and execute deployment commands
-ssh -i "$SSH_KEY_PATH" -p "$LIGHTSAIL_PORT" -o StrictHostKeyChecking=accept-new "$LIGHTSAIL_USER@$LIGHTSAIL_HOST" << EOF
+# Behavioural switches, read from the environment so the positional-argument contract
+# used by the three deploy workflows stays unchanged.
+#   ALLOW_DIRTY          discard on-box edits that differ from the target commit (see remote/sync-repo.sh)
+#   HEALTHCHECK_URL      what the post-deploy check polls, from the box's point of view
+#   HEALTHCHECK_TIMEOUT  seconds to wait; a from-scratch bench rebuild takes minutes
+ALLOW_DIRTY="${ALLOW_DIRTY:-false}"
+HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://localhost:8000}"
+HEALTHCHECK_TIMEOUT="${HEALTHCHECK_TIMEOUT:-900}"
+echo "  Allow dirty tree: $ALLOW_DIRTY"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+SSH_OPTS=(-i "$SSH_KEY_PATH" -p "$LIGHTSAIL_PORT" -o StrictHostKeyChecking=accept-new)
+SSH_TARGET="$LIGHTSAIL_USER@$LIGHTSAIL_HOST"
+
+# Step 1 - bring the checkout to origin/$BRANCH_NAME. Piped in as a real file rather than
+# a heredoc so its $VARs belong to the remote shell and so it can be unit-tested locally.
+ssh "${SSH_OPTS[@]}" "$SSH_TARGET" \
+    ALLOW_DIRTY="$ALLOW_DIRTY" bash -s -- \
+    "$DEPLOY_DIR" "$REPO_URL" "$BRANCH_NAME" "$ALLOW_DIRTY" \
+    < "$SCRIPT_DIR/remote/sync-repo.sh"
+
+# Step 2 - configure and start the stack.
+ssh "${SSH_OPTS[@]}" "$SSH_TARGET" << EOF
 set -e
 
 # Verify Docker and Docker Compose are available
@@ -60,26 +82,12 @@ fi
 echo "✓ Using Docker Compose plugin"
 docker compose version
 
-echo "=== Creating deployment directory ==="
-sudo mkdir -p $DEPLOY_DIR
-sudo chown $LIGHTSAIL_USER:$LIGHTSAIL_USER $DEPLOY_DIR
-
-echo "=== Cloning or updating repository ==="
-if [ -d "$DEPLOY_DIR/.git" ]; then
-    echo "Repository exists, pulling latest changes from branch: $BRANCH_NAME"
-    cd $DEPLOY_DIR
-    git fetch origin
-    git checkout $BRANCH_NAME || git checkout -b $BRANCH_NAME origin/$BRANCH_NAME
-    git pull origin $BRANCH_NAME
-else
-    echo "Cloning repository and checking out branch: $BRANCH_NAME"
-    git clone $REPO_URL $DEPLOY_DIR
-    cd $DEPLOY_DIR
-    git checkout $BRANCH_NAME || git checkout -b $BRANCH_NAME origin/$BRANCH_NAME
-fi
-
-echo "=== Copying .env file ==="
-cp $ENV_FILE_SOURCE $DEPLOY_DIR/.env
+echo "=== Installing .env file ==="
+# Move, not copy: a copy left the secrets behind in the upload path (the user's home) after
+# every deploy. umask 077 keeps anything this shell creates owner-only; chmod 600 fixes the
+# mode of the moved file, which keeps whatever mode scp gave it (VC-657).
+umask 077
+mv -f $ENV_FILE_SOURCE $DEPLOY_DIR/.env
 chmod 600 $DEPLOY_DIR/.env
 
 echo "=== Fixing Docker volume permissions ==="
@@ -97,25 +105,33 @@ fi
 echo "=== Deploying with Docker Compose ==="
 cd $DEPLOY_DIR
 
+# Before down: the first deploy with the site-data volume copies the running container's
+# uploaded files into it, or they would be discarded with the container. stdin is this
+# heredoc: without </dev/null anything in the seed that reads stdin eats the steps below.
+bash $DEPLOY_DIR/.github/scripts/remote/seed-site-volume.sh $DEPLOY_DIR $DOCKER_COMPOSE_FILE < /dev/null
+
 # Use docker compose (plugin) with explicit env file
 sudo docker compose --env-file $DEPLOY_DIR/.env -f $DOCKER_COMPOSE_FILE down || true
 sudo docker compose --env-file $DEPLOY_DIR/.env -f $DOCKER_COMPOSE_FILE up -d --build
 
 echo "=== Verifying containers ==="
 sleep 5
-sudo docker compose -f $DOCKER_COMPOSE_FILE ps
+sudo docker compose --env-file $DEPLOY_DIR/.env -f $DOCKER_COMPOSE_FILE ps
 
-echo "=== Container logs (last 50 lines) ==="
-sudo docker compose -f $DOCKER_COMPOSE_FILE logs --tail=50
+# Container logs are NOT printed: this job's output is a public Actions log, and bench /
+# init.sh output can carry credentials. On a failed verification, verify-site.sh writes them
+# to a root-only file on the box instead (VC-657).
+echo "Container logs are not echoed here; read them on the box with 'sudo docker compose logs'."
 
-echo "✓ Deployment completed successfully"
+echo "✓ Containers started"
 EOF
 
-if [ $? -eq 0 ]; then
-    echo "✓ Docker application deployed successfully"
-    exit 0
-else
-    echo "Error: Deployment failed"
-    exit 1
-fi
+# Step 3 - containers being up is not the same as the site being up. The old script
+# reported success here, which is how a stack that never served a request still produced
+# a green deploy. `set -e` makes a failed verification fail the job.
+ssh "${SSH_OPTS[@]}" "$SSH_TARGET" bash -s -- \
+    "$DEPLOY_DIR" "$DOCKER_COMPOSE_FILE" "$HEALTHCHECK_URL" "$HEALTHCHECK_TIMEOUT" \
+    < "$SCRIPT_DIR/remote/verify-site.sh"
+
+echo "✓ Docker application deployed and verified"
 

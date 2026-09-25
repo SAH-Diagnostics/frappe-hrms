@@ -2,7 +2,7 @@
 set -e
 
 # setup-certbot.sh
-# Purpose: Obtain and configure SSL certificate with Certbot
+# Purpose: Obtain the SSL certificate with Certbot (the vhost is rendered by render-nginx-conf.sh)
 # Arguments:
 #   $1 - CERTBOT_DOMAIN
 #   $2 - CERTBOT_EMAIL
@@ -40,14 +40,24 @@ echo "=== Checking existing certificates ==="
 if sudo certbot certificates 2>/dev/null | grep -q "$CERTBOT_DOMAIN"; then
     echo "Certificate already exists for $CERTBOT_DOMAIN"
     sudo certbot certificates
+    # The vhost reads live/<domain>/; a certificate stored under another name (e.g. a
+    # "-0001" suffix) would fail nginx -t later, so stop here with the reason instead.
+    if ! sudo test -f /etc/letsencrypt/live/$CERTBOT_DOMAIN/fullchain.pem; then
+        echo "Error: the certificate is not at /etc/letsencrypt/live/$CERTBOT_DOMAIN/ (see certbot certificates above)"
+        exit 1
+    fi
     echo "✓ Using existing certificate"
 else
     echo "=== Obtaining new certificate ==="
-    sudo certbot --nginx -d $CERTBOT_DOMAIN \\
+    # certonly: certbot only issues the certificate and never edits the vhost, which
+    # render-nginx-conf.sh owns (VC-652). --cert-name pins the live/ directory the vhost
+    # references; the deploy hook reloads nginx after each renewal.
+    sudo certbot certonly --nginx -d $CERTBOT_DOMAIN \\
+        --cert-name $CERTBOT_DOMAIN \\
         --non-interactive \\
         --agree-tos \\
         --email $CERTBOT_EMAIL \\
-        --redirect || {
+        --deploy-hook "systemctl reload nginx" || {
         echo "Error: Failed to obtain certificate"
         exit 1
     }

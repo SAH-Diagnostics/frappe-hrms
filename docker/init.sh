@@ -10,6 +10,8 @@ DB_NAME_VALUE="${DB_NAME:-${RDS_DB_NAME:-}}"
 ADMIN_PASSWORD_VALUE="${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}"
 DEVELOPER_MODE_VALUE="${DEVELOPER_MODE:-0}"
 SITE_NAME="${SITE_NAME:-hrms.localhost}"
+EXISTING_SITE_VALUE="${EXISTING_SITE:-false}"
+: "${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set (deploy secret key FRAPPE_ENCRYPTION_KEY)}"
 
 echo "=== Installing AWS CLI ==="
 # Install aws-cli if not already installed
@@ -66,14 +68,150 @@ echo "=== Initializing bench and site (${SITE_NAME}) ==="
 # Ensure node in PATH for bench
 export PATH="${NVM_DIR}/versions/node/v${NODE_VERSION_DEVELOP}/bin/:${PATH}"
 
+# Pinned application versions.
+#
+# These were `version-16` -- a *branch*, which moves every time upstream merges. Because
+# `sites/` is not a Docker volume, `compose down && up` rebuilds the bench from scratch and
+# re-clones every app, so an unpinned deploy installs whatever was newest that day.
+#
+# They are tags, not commit SHAs, because `bench init --frappe-branch` and `bench get-app
+# --branch` both forward the value to `git clone --branch`, which accepts a branch or a tag
+# but NOT an arbitrary SHA.
+#
+# WHY THESE VALUES (VC-648, 2026-09-23)
+#
+# The previous pins (v16.29.0 / v16.30.0 / v16.15.0) were the versions production had been
+# running since 2026-07-29. Checking them against the GitHub Advisory API found **20 open
+# high/critical advisories** on the v16 line -- 4 critical, the oldest published 2026-08-13,
+# i.e. 27 days past the 14-day remediation standard the business is certifying against.
+# Every ceiling in that set is `< 16.35.0`, so the values below are the clearing versions.
+#
+# Keeping the old pins would have frozen an HR and payroll system on a known SQL injection
+# (GHSA-v38v-9h2p-hr8v), a server-side template injection (GHSA-6w83-8777-v93q) and two
+# account-takeover XSS issues. Pinning is only safe when the pin is maintained; an unmaintained
+# pin is worse than no pin, because it looks deliberate.
+#
+# THESE VALUES HAVE A DATE ON THEM. They were the `version-16` tips on 2026-09-23. Before this
+# reaches `main` -- which is what deploys production -- RE-DERIVE them and re-run
+# `.github/workflows/security-advisory-check.yml`. Merging a stale set is the same bug in a
+# new costume. The process that owns this is `helper/docs/erp-patch-and-dependency-process.md`
+# (SAH-root helper/, NOT in this repository -- do not "fix" this into a repo-relative link; that
+# folder holds production IP addresses and security-group ids and this repository is public).
+FRAPPE_REF="${FRAPPE_REF:-v16.35.0}"    # 012667b9c
+ERPNEXT_REF="${ERPNEXT_REF:-v16.36.0}"  # b30aa5334
+HRMS_REF="${HRMS_REF:-v16.20.0}"        # c0a04b80e
+
 # Initialize bench directory if it does not exist (non-destructive)
 BENCH_DIR="/home/frappe/frappe-bench"
 cd /home/frappe
 if [ ! -d "$BENCH_DIR" ]; then
     echo "Creating bench at ${BENCH_DIR}"
-    bench init --skip-redis-config-generation --frappe-branch version-16 frappe-bench
+    bench init --skip-redis-config-generation --frappe-branch "$FRAPPE_REF" frappe-bench
 fi
 cd "$BENCH_DIR"
+
+# The bench is rebuilt inside a fresh container on every deploy, so anything under
+# sites/<site> that is not on the volume is lost: uploaded files, and site_config.json with
+# the encryption_key. The volume is mounted outside the bench on purpose -- a mount inside
+# it would create $BENCH_DIR before `bench init` runs, and the guard above would skip it.
+SITE_DATA_DIR="${SITE_DATA_DIR:-/home/frappe/site-data}"
+link_site_dir() {
+    local target="$SITE_DATA_DIR/$SITE_NAME"
+    local link="$BENCH_DIR/sites/$SITE_NAME"
+
+    if [ ! -d "$SITE_DATA_DIR" ]; then
+        echo "FATAL: $SITE_DATA_DIR is missing; the frappe-site-data volume is not mounted." >&2
+        echo "Refusing to start: site files and the encryption key would be lost on the next deploy." >&2
+        exit 1
+    fi
+    sudo chown frappe:frappe "$SITE_DATA_DIR"
+    mkdir -p "$target"
+
+    if [ -L "$link" ]; then
+        if [ "$(readlink "$link")" != "$target" ]; then
+            echo "FATAL: $link points to $(readlink "$link"), expected $target." >&2
+            exit 1
+        fi
+    elif [ -e "$link" ]; then
+        if [ -n "$(ls -A "$target")" ]; then
+            echo "FATAL: both $link and $target hold site data; refusing to choose one." >&2
+            exit 1
+        fi
+        cp -a "$link/." "$target/"
+        rm -rf "$link"
+        ln -s "$target" "$link"
+    else
+        ln -s "$target" "$link"
+    fi
+    echo "Site directory: $link -> $target"
+}
+link_site_dir
+
+# Frappe encrypts stored secrets (2FA seeds, email passwords, API secrets) with the
+# encryption_key in site_config.json, and generates a random one when it is missing. A key
+# that changes makes every stored secret undecryptable, so the key comes from the deploy
+# secret and a different key already on the site is never overwritten.
+#   strict: write the key if the site has none; stop if it has a different one
+#   adopt:  also replace a different key; only for a site created during this boot
+# The key is passed through the environment, never argv, and is never printed.
+ensure_encryption_key() {
+    local mode="${1:-strict}"
+    local config="$BENCH_DIR/sites/$SITE_NAME/site_config.json"
+    local state
+
+    state="$(SITE_CONFIG="$config" python3 - <<'PY'
+import json, os, re
+key = os.environ.get("ENCRYPTION_KEY", "")
+if not re.fullmatch(r"[A-Za-z0-9_-]{43}=", key):
+    print("invalid")
+    raise SystemExit
+try:
+    with open(os.environ["SITE_CONFIG"]) as f:
+        current = json.load(f).get("encryption_key")
+except FileNotFoundError:
+    print("no-config")
+    raise SystemExit
+print("absent" if not current else "match" if current == key else "mismatch")
+PY
+)" || state="error"
+
+    case "$state:$mode" in
+        match:*)
+            echo "✓ encryption_key matches the deploy secret"
+            return 0
+            ;;
+        absent:* | mismatch:adopt)
+            ;;
+        mismatch:strict)
+            echo "FATAL: site_config.json holds a different encryption_key than FRAPPE_ENCRYPTION_KEY." >&2
+            echo "Refusing to overwrite it: data encrypted with the current key would become unreadable." >&2
+            echo "Decide which key is correct before deploying again." >&2
+            exit 1
+            ;;
+        invalid:*)
+            echo "FATAL: ENCRYPTION_KEY is not a Fernet key (44 characters, URL-safe base64)." >&2
+            exit 1
+            ;;
+        *)
+            echo "FATAL: could not read $config (state: $state)." >&2
+            exit 1
+            ;;
+    esac
+
+    SITE_CONFIG="$config" python3 - <<'PY'
+import json, os
+path = os.environ["SITE_CONFIG"]
+with open(path) as f:
+    conf = json.load(f)
+conf["encryption_key"] = os.environ["ENCRYPTION_KEY"]
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(conf, f, indent=1)
+os.chmod(tmp, os.stat(path).st_mode & 0o777)
+os.replace(tmp, path)
+PY
+    echo "✓ encryption_key written to site_config.json"
+}
 
 # Basic ownership to avoid permission surprises
 chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
@@ -100,33 +238,147 @@ sed -i '/redis/d' ./Procfile 2>/dev/null || true
 sed -i '/watch/d' ./Procfile 2>/dev/null || true
 
 echo "=== Getting apps ==="
-bench get-app --branch version-16 erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
-bench get-app --branch version-16 hrms || echo "Warning: Failed to get hrms app (may already exist)"
+bench get-app --branch "$ERPNEXT_REF" erpnext || echo "Warning: Failed to get erpnext app (may already exist)"
+bench get-app --branch "$HRMS_REF" hrms || echo "Warning: Failed to get hrms app (may already exist)"
 
 SAH_CRM_REPO="${SAH_CRM_REPO:-https://github.com/SAH-Diagnostics/sah_crm}"
+# SAH_CRM_BRANCH is set per environment by each deploy workflow (prod `main`, staging and
+# dev `staging`) and passed in through docker-compose.yml. It is deliberately not a literal
+# here: this file is promoted from staging to main unchanged, so a literal would travel with
+# it. The `main` fallback only applies to runs outside the deploy workflows (local compose).
+#
+# sah_crm is deliberately NOT pinned, unlike frappe/erpnext/hrms above. It is our own
+# actively developed app, and the point of tracking a branch here is that a deploy picks up
+# the CRM work that was just merged. The upstream apps are pinned because we do not control
+# their release cadence; this one we do.
+#
+# It also CANNOT be pinned the way they are: `--branch` takes a branch or a tag, and the
+# sah_crm repository has zero tags. Cutting a release tag there is tracked as a follow-up;
+# until then the deploy records the resolved SHA below so a rebuild is at least auditable
+# after the fact, which is what the 14-day process needs from it.
 SAH_CRM_BRANCH="${SAH_CRM_BRANCH:-main}"
 bench get-app "$SAH_CRM_REPO" --branch "$SAH_CRM_BRANCH" || echo "Warning: Failed to get sah_crm app (may already exist)"
 
+# Record the resolved sah_crm commit. It is branch-tracked, so this line is the only record of
+# what a given deploy actually installed; without it "which CRM code is in production?" is
+# unanswerable after the fact.
+if [ -d "$BENCH_DIR/apps/sah_crm/.git" ]; then
+    echo "=== sah_crm resolved to: $(git -C "$BENCH_DIR/apps/sah_crm" rev-parse HEAD 2>/dev/null || echo unknown) (branch $SAH_CRM_BRANCH) ==="
+else
+    echo "=== WARNING: sah_crm was not cloned; its get-app failure above was swallowed ==="
+fi
+
 echo "=== Preparing site: $SITE_NAME ==="
 
-# Helper: detect whether the target RDS database already contains a Frappe schema.
-# We treat the presence of core tables (e.g. tabUser) as "site already exists".
+# Decide whether the target database already holds a Frappe site.
+#
+# This MUST fail closed. The caller below treats "no Frappe schema" as permission to run
+# `bench new-site`, which is destructive against a production database. If a connection
+# failure were allowed to look like an empty database, a transient fault -- notably the
+# MariaDB "Too many connections" condition behind the 24 Jun and 8 Sep 2026 outages
+# (VC-620) -- would route a redeploy straight into site re-creation over live data.
+#
+# Three properties are load-bearing; each replaced an earlier attempt that looked correct:
+#
+#   1. ONE connection decides. An earlier version probed reachability with a separate
+#      `SELECT 1` and then ran the real query through `... | grep -q`. Without
+#      `set -o pipefail` a pipeline reports grep's status, so the real query's failure was
+#      still invisible, and a pool flap between the two calls landed back in `bench
+#      new-site`. Status and output must come from the same call that makes the decision.
+#
+#   2. NO `-D`. Selecting the database up front makes a not-yet-created database raise
+#      ERROR 1049, which is indistinguishable from a connection fault -- that would abort
+#      legitimate first-time provisioning and, under `restart: unless-stopped`, crash-loop
+#      a brand-new environment forever. `SHOW TABLES FROM` asks the same question without
+#      requiring the database to exist.
+#
+#   3. `exit`, not `return`, on a fault. init.sh runs under `set -e`, but a non-zero return
+#      from a function used as an `if` condition is exempt from it, so `return 1` here
+#      would be silently swallowed -- which is exactly how the original bug read as safe.
 database_has_frappe_site() {
+    local probe_output
+    local probe_status=0
+
     if [ -z "$DB_HOST_VALUE" ] || [ -z "$DB_NAME_VALUE" ]; then
+        echo "FATAL: database_has_frappe_site called without DB_HOST and DB_NAME set." >&2
+        echo "Refusing to guess: answering 'no site' here would authorise bench new-site." >&2
+        exit 1
+    fi
+
+    echo "Checking whether database '$DB_NAME_VALUE' on '$DB_HOST_VALUE' holds a Frappe site..."
+
+    # The password goes in MYSQL_PWD, never on argv: an argv password is readable by any
+    # user on the host via `ps` / /proc/<pid>/cmdline for as long as the client runs (VC-657).
+    probe_output=$(MYSQL_PWD="$DB_PASSWORD_VALUE" mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" \
+        -u "$DB_USER_VALUE" \
+        -e "SHOW TABLES FROM \`$DB_NAME_VALUE\` LIKE 'tabUser';" 2>&1) || probe_status=$?
+
+    if [ "$probe_status" -eq 0 ]; then
+        case "$probe_output" in
+            *tabUser*)
+                echo "Detected an existing Frappe schema in '$DB_NAME_VALUE'."
+                return 0
+                ;;
+        esac
+        echo "Database '$DB_NAME_VALUE' exists and holds no Frappe schema; safe to provision."
         return 1
     fi
 
-    echo "Checking if RDS database '$DB_NAME_VALUE' already contains a Frappe site..."
-    if mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
-        -D "$DB_NAME_VALUE" \
-        -e "SHOW TABLES LIKE 'tabUser';" 2>/dev/null | grep -q "tabUser"; then
-        echo "Detected existing Frappe schema in RDS database '$DB_NAME_VALUE'."
-        return 0
-    fi
+    # A database that does not exist yet is a legitimate first-run state, not a fault.
+    case "$probe_output" in
+        *"ERROR 1049"*)
+            echo "Database '$DB_NAME_VALUE' does not exist yet; safe to provision."
+            return 1
+            ;;
+    esac
 
-    echo "No Frappe schema detected in RDS database '$DB_NAME_VALUE'."
-    return 1
+    echo "FATAL: cannot determine the state of database '$DB_NAME_VALUE' on '$DB_HOST_VALUE'." >&2
+    echo "Refusing to continue: an unreachable database must not be treated as an empty one," >&2
+    echo "because that would create a new site over existing production data." >&2
+    echo "mysql reported: $probe_output" >&2
+    exit 1
 }
+
+# Second, independent guard on site creation.
+#
+# database_has_frappe_site() *infers* whether a site exists. EXISTING_SITE is a *declaration*
+# from the environment's own configuration that one does. Where an operator has declared it,
+# no inference may authorise `bench new-site`: if the schema it declares cannot be found,
+# the fault is in the database or the configuration, never a reason to provision over it.
+#
+# The two guards fail independently, which is the point of having both. The probe covers a
+# database that cannot be reached. This covers one that is reached and answers wrongly --
+# a DB_NAME typo, an instance restored empty, a replica pointed at by mistake. In each of
+# those the probe honestly reports "no schema" and would, on its own, authorise creation.
+assert_provisioning_allowed() {
+    if [ "$EXISTING_SITE_VALUE" = "true" ]; then
+        echo "FATAL: EXISTING_SITE=true declares that site '$SITE_NAME' already exists," >&2
+        echo "but no Frappe schema was found in '$DB_NAME_VALUE' on '$DB_HOST_VALUE'." >&2
+        echo "Refusing to run bench new-site: creating a site here would write over the" >&2
+        echo "data this environment is declared to hold." >&2
+        echo "Investigate the database first. If this environment genuinely must be" >&2
+        echo "provisioned from empty, set EXISTING_SITE=false deliberately." >&2
+        exit 1
+    fi
+}
+
+# Fail fast on a half-configured external database. Without this, a deploy that sets
+# DB_HOST but loses DB_NAME falls through to the local-MariaDB branch below, which runs
+# `bench new-site --force` and still forwards --db-host -- provisioning an orphan schema
+# on the production RDS instance and bringing the ERP up empty. One orphan per container
+# recreate, which `restart: unless-stopped` makes considerably more likely.
+if { [ -n "$DB_HOST_VALUE" ] && [ -z "$DB_NAME_VALUE" ]; } || \
+   { [ -z "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; }; then
+    echo "FATAL: DB_HOST and DB_NAME must be set together (got host='$DB_HOST_VALUE', name='$DB_NAME_VALUE')." >&2
+    echo "Refusing to continue: a half-configured external database would be provisioned as a local one." >&2
+    exit 1
+fi
+
+# A site already on the volume must carry the deploy key before migrate can encrypt anything.
+SITE_CREATED=false
+if [ -f "$BENCH_DIR/sites/$SITE_NAME/site_config.json" ]; then
+    ensure_encryption_key strict
+fi
 
 # For external RDS databases, try to reuse existing site/DB if present,
 # otherwise create the site once (non-destructive on subsequent runs).
@@ -162,6 +414,7 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
 }
 EOF
             fi
+            ensure_encryption_key strict
 
             # Ensure global config matches RDS
             bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
@@ -171,6 +424,7 @@ EOF
             bench --site "$SITE_NAME" migrate || true
         else
             echo "Empty (or non-Frappe) database on RDS; creating site on RDS (one-time operation)..."
+            assert_provisioning_allowed
 
             # Try bench new-site first (might work if RDS allows it for master user)
             if bench new-site "$SITE_NAME" \
@@ -183,8 +437,8 @@ EOF
                 --db-root-password "$DB_PASSWORD_VALUE" \
                 --db-root-username "$DB_USER_VALUE" \
                 --admin-password "$ADMIN_PASSWORD_VALUE" \
-                --verbose \
                 --no-mariadb-socket 2>&1; then
+                SITE_CREATED=true
                 echo "Site created successfully using bench new-site"
             else
                 echo "bench new-site failed (likely CREATE USER restriction), creating site manually..."
@@ -195,7 +449,8 @@ EOF
                 mkdir -p "/home/frappe/frappe-bench/sites/$SITE_NAME/public"
 
                 # Ensure target database exists (idempotent; requires privileges on RDS user)
-                mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" -p"$DB_PASSWORD_VALUE" \
+                # MYSQL_PWD, not -p: keeps the password off argv (VC-657).
+                MYSQL_PWD="$DB_PASSWORD_VALUE" mysql -h "$DB_HOST_VALUE" -P "$DB_PORT_VALUE" -u "$DB_USER_VALUE" \
                     -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME_VALUE\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || true
 
                 # Create site_config.json with RDS credentials (only if it does not already exist)
@@ -213,6 +468,7 @@ EOF
 }
 EOF
                 fi
+                ensure_encryption_key strict
 
                 # Set global config
                 bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
@@ -234,6 +490,7 @@ else
         bench --site "$SITE_NAME" migrate || true
     else
         echo "No existing local site detected; creating new local site..."
+        assert_provisioning_allowed
         bench new-site "$SITE_NAME" \
             --force \
             ${DB_NAME_VALUE:+--db-name "$DB_NAME_VALUE"} \
@@ -243,8 +500,27 @@ else
             --mariadb-root-username "$DB_USER_VALUE" \
             --admin-password "$ADMIN_PASSWORD_VALUE" \
             --no-mariadb-socket
+        SITE_CREATED=true
     fi
 fi
+
+# Every path above leaves a site_config.json; make sure it carries the deploy key.
+if [ "$SITE_CREATED" = true ]; then
+    ensure_encryption_key adopt
+else
+    ensure_encryption_key strict
+fi
+
+# `bench new-site` creates these (frappe.installer.make_site_dirs); the attach paths above only
+# make bare private/ and public/. Frappe writes an upload without creating its folder, so a
+# missing private/files or public/files fails every upload with FileNotFoundError.
+ensure_site_dirs() {
+    local dir
+    for dir in public/files private/files private/backups locks logs; do
+        mkdir -p "$BENCH_DIR/sites/$SITE_NAME/$dir"
+    done
+}
+ensure_site_dirs
 
 # Ensure the site knows its public URL so generated links use the correct host
 if [ -n "$SITE_URL" ]; then
@@ -269,6 +545,20 @@ echo "=== Installing SAH CRM app (idempotent) ==="
 bench --site "$SITE_NAME" install-app sah_crm || true
 bench --site "$SITE_NAME" set-config developer_mode "$DEVELOPER_MODE_VALUE"
 bench --site "$SITE_NAME" enable-scheduler
+
+# Two-factor authentication is re-asserted on every boot, so a rebuilt instance always comes
+# up with authenticator-app 2FA on. Policy and knobs: docker/configure_2fa.py.
+# Non-fatal on purpose: exiting here would take the whole ERP down. The settings persist in the
+# database, so a failed re-assert keeps whatever policy was last applied -- which, on a site that
+# never had one, means 2FA stays OFF. Check the boot log for "2FA policy applied" after a deploy.
+TWO_FACTOR_POLICY_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/configure_2fa.py"
+apply_two_factor_policy() {
+    echo "=== Applying two-factor authentication policy ==="
+    if ! (cd "$BENCH_DIR/sites" && "$BENCH_DIR/env/bin/python" "$TWO_FACTOR_POLICY_SCRIPT" "$SITE_NAME"); then
+        echo "✗ 2FA policy NOT applied — the site keeps its previous 2FA settings; check the error above" >&2
+    fi
+}
+apply_two_factor_policy
 
 bench --site "$SITE_NAME" clear-cache || true
 bench use "$SITE_NAME" || true

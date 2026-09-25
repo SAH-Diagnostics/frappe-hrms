@@ -6,16 +6,21 @@ on:
       - staging
     paths:
       - 'nginx/**'
-      - '.github/workflows/configure-nginx-staging.yml'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   configure-nginx:
     runs-on: ubuntu-latest
-    
+    # Same staging credentials and SSH access as deploy-staging.yml, so the same
+    # environment gate (secrets, branch policy, required reviewers) must apply.
+    environment: staging
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Make scripts executable
         run: chmod +x .github/scripts/*.sh
@@ -32,18 +37,6 @@ jobs:
           .github/scripts/fetch-aws-secrets.sh \
             "${{ secrets.STAGING_AWS_DEPLOY_SECRET_ID }}" \
             "${{ github.workspace }}/secrets.env"
-          source ${{ github.workspace }}/secrets.env
-
-      - name: Load secrets as environment variables
-        run: |
-          source ${{ github.workspace }}/secrets.env
-          # Export all variables for use in subsequent steps
-          while IFS='=' read -r key value; do
-            # Skip comments and empty lines
-            [[ "$key" =~ ^#.*$ ]] && continue
-            [[ -z "$key" ]] && continue
-            echo "$key=$value" >> $GITHUB_ENV
-          done < ${{ github.workspace }}/secrets.env
 
       - name: Allow this runner to reach SSH (VC-647)
         # SSH is restricted at the Lightsail firewall to approved addresses. Grant this
@@ -76,34 +69,20 @@ jobs:
       - name: Generate Nginx configuration
         run: |
           source ${{ github.workspace }}/secrets.env
-          cat > ${{ github.workspace }}/nginx.conf << EOF
-          upstream frappe {
-              server localhost:8000;
-          }
-          
-          server {
-              listen 80;
-              server_name $CERTBOT_DOMAIN;
-              
-              client_max_body_size 50M;
-              
-              location / {
-                  proxy_pass http://frappe;
-                  proxy_set_header Host \$host;
-                  proxy_set_header X-Real-IP \$remote_addr;
-                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto \$scheme;
-                  proxy_read_timeout 300s;
-              }
-              
-              location /assets {
-                  proxy_pass http://frappe;
-                  expires 7d;
-                  add_header Cache-Control "public, immutable";
-              }
-          }
-          EOF
-          echo "✓ Nginx configuration generated"
+          .github/scripts/render-nginx-conf.sh \
+            "$CERTBOT_DOMAIN" \
+            "${{ github.workspace }}/nginx.conf"
+
+      - name: Setup SSL certificate
+        # Before Configure Nginx: the vhost it installs references this certificate (VC-652).
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/setup-certbot.sh \
+            "$CERTBOT_DOMAIN" \
+            "$CERTBOT_EMAIL" \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
 
       - name: Configure Nginx
         run: |
@@ -112,16 +91,6 @@ jobs:
             "$SITE_NAME" \
             "$CERTBOT_DOMAIN" \
             "${{ github.workspace }}/nginx.conf" \
-            "$lightsail_user" \
-            "$lightsail_host" \
-            "${lightsail_port:-22}"
-
-      - name: Setup SSL certificate
-        run: |
-          source ${{ github.workspace }}/secrets.env
-          .github/scripts/setup-certbot.sh \
-            "$CERTBOT_DOMAIN" \
-            "$CERTBOT_EMAIL" \
             "$lightsail_user" \
             "$lightsail_host" \
             "${lightsail_port:-22}"
@@ -172,7 +141,7 @@ jobs:
             echo ""
             echo "### Configuration Time"
             echo "- $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Revoke this runner's SSH access (VC-647)
         # Not continue-on-error: a runner address left on the SSH rule must turn the run

@@ -5,14 +5,25 @@ on:
     branches:
       - staging
   workflow_dispatch:
+    inputs:
+      allow_dirty:
+        description: "Discard on-box edits that differ from the target commit (review the diff from the failed run first)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+    # Binds the job to the GitHub environment so environment-scoped secrets, the
+    # deployment branch policy and required reviewers apply once they are configured.
+    environment: staging
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Make scripts executable
         run: chmod +x .github/scripts/*.sh
@@ -30,22 +41,14 @@ jobs:
             "${{ secrets.STAGING_AWS_DEPLOY_SECRET_ID }}" \
             "${{ github.workspace }}/secrets.env"
 
-      - name: Load secrets as environment variables
-        run: |
-          source ${{ github.workspace }}/secrets.env
-          # Export all variables for use in subsequent steps
-          while IFS='=' read -r key value; do
-            # Skip comments and empty lines
-            [[ "$key" =~ ^#.*$ ]] && continue
-            [[ -z "$key" ]] && continue
-            echo "$key=$value" >> $GITHUB_ENV
-          done < ${{ github.workspace }}/secrets.env
-
       - name: Generate environment file
         run: |
           .github/scripts/generate-env-file.sh \
             "${{ github.workspace }}/secrets.env" \
             "${{ github.workspace }}/.env"
+          # Per-environment by design (VC-655): the workflow, not the promoted init.sh, picks
+          # the sah_crm branch, so a staging -> main promotion cannot carry staging's value.
+          echo "SAH_CRM_BRANCH=staging" >> "${{ github.workspace }}/.env"
 
       - name: Allow this runner to reach SSH (VC-647)
         # SSH is restricted at the Lightsail firewall to approved addresses. Grant this
@@ -105,6 +108,13 @@ jobs:
         id: deploy
         run: |
           source ${{ github.workspace }}/secrets.env
+          # Verify the public URL, so a green job means the site actually served a
+          # request through nginx -- not merely that containers started. Empty when
+          # CERTBOT_DOMAIN is unset, in which case the script falls back to localhost.
+          export HEALTHCHECK_URL="${CERTBOT_DOMAIN:+https://$CERTBOT_DOMAIN}"
+          # Only ever true on a manual re-run where someone reviewed the full diff on the box.
+          export ALLOW_DIRTY="${{ inputs.allow_dirty || false }}"
+          export HEALTHCHECK_TIMEOUT="${HEALTHCHECK_TIMEOUT:-900}"
           .github/scripts/deploy-docker-app.sh \
             "${{ github.server_url }}/${{ github.repository }}.git" \
             "/opt/app" \
@@ -148,7 +158,7 @@ jobs:
             echo ""
             echo "### Deployment Time"
             echo "- $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Revoke this runner's SSH access (VC-647)
         # Not continue-on-error: a runner address left on the SSH rule must turn the run

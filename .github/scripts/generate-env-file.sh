@@ -25,14 +25,21 @@ if [ ! -f "$SECRETS_FILE" ]; then
     exit 1
 fi
 
+# The file holds every deploy secret: create it owner-only. umask must be set BEFORE the
+# truncation below, which is what creates the file; chmod covers a file that already existed
+# with a wider mode (VC-657).
+umask 077
+
 # Clear output file
 > "$OUTPUT_ENV_FILE"
+chmod 600 "$OUTPUT_ENV_FILE"
 
-# Required variables for Docker deployment
+# Required variables for Docker deployment.
+# The deploy-scope AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION are
+# intentionally NOT written to the box: nothing there reads them (backups use
+# BUCKET_*), and the file is handed to `docker compose --env-file`, so every key
+# in it is available to the container configuration.
 REQUIRED_VARS=(
-    "AWS_ACCESS_KEY_ID"
-    "AWS_SECRET_ACCESS_KEY"
-    "AWS_REGION"
     "BUCKET_ACCESS_KEY_ID"
     "BUCKET_SECRET_ACCESS_KEY"
     "BUCKET_ENDPOINT"
@@ -44,10 +51,19 @@ REQUIRED_VARS=(
     "DATABASE_PORT"
     "DATABASE_USERNAME"
     "ADMIN_PASSWORD"
+    "FRAPPE_ENCRYPTION_KEY"
     "SITE_NAME"
     "SITE_URL"
     "EXISTING_SITE"
     "UPDATE_CODE"
+)
+
+# Optional variables: passed through when present in the secret, otherwise docker-compose.yml
+# supplies the default
+OPTIONAL_VARS=(
+    "FRAPPE_2FA_ENABLED"
+    "FRAPPE_2FA_ROLES"
+    "FRAPPE_2FA_ISSUER"
 )
 
 
@@ -58,7 +74,12 @@ echo "Writing environment variables to $OUTPUT_ENV_FILE..."
 declare -A SECRETS_MAP
 
 # Load secrets into map
-while IFS='=' read -r key value || [ -n "$key" ]; do
+# Split on the first '=' only. `IFS='=' read -r key value` drops a trailing '=' from the value
+# under bash 5 (the runners), which truncates base64 secrets such as FRAPPE_ENCRYPTION_KEY.
+while IFS= read -r line || [ -n "$line" ]; do
+    key="${line%%=*}"
+    value=""
+    [[ "$line" == *=* ]] && value="${line#*=}"
     # Skip comments and empty lines
     [[ "$key" =~ ^#.*$ ]] && continue
     [[ -z "$key" ]] && continue
@@ -82,6 +103,15 @@ for var in "${REQUIRED_VARS[@]}"; do
     echo "${var}=${value}" >> "$OUTPUT_ENV_FILE"
 done
 
+OPTIONAL_WRITTEN=0
+for var in "${OPTIONAL_VARS[@]}"; do
+    value="${SECRETS_MAP[$var]}"
+    if [ -n "$value" ]; then
+        echo "${var}=${value}" >> "$OUTPUT_ENV_FILE"
+        OPTIONAL_WRITTEN=$((OPTIONAL_WRITTEN + 1))
+    fi
+done
+
 # Map DATABASE_* variables to DB_* for docker-compose compatibility
 if [ -n "${SECRETS_MAP[DATABASE_ENDPOINT]}" ]; then
     echo "DB_HOST=${SECRETS_MAP[DATABASE_ENDPOINT]}" >> "$OUTPUT_ENV_FILE"
@@ -100,7 +130,7 @@ if [ -n "${SECRETS_MAP[DATABASE_NAME]}" ]; then
 fi
 
 echo "✓ .env file generated successfully at $OUTPUT_ENV_FILE"
-TOTAL_VARS=$((${#REQUIRED_VARS[@]} + 5))  # +5 for DB_* mapped variables
+TOTAL_VARS=$((${#REQUIRED_VARS[@]} + 5 + OPTIONAL_WRITTEN))  # +5 for DB_* mapped variables
 echo "Total variables written: $TOTAL_VARS"
 
 exit 0

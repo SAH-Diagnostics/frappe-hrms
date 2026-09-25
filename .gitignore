@@ -27,3 +27,4 @@ deploy/dev/.env.remote
 !docker/.env.example
 *.pem
 *.key
+.secrets

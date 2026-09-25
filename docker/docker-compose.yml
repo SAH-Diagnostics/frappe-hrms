@@ -2,6 +2,7 @@
 services:
   mariadb:
     image: mariadb:10.8
+    restart: unless-stopped
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -13,10 +14,18 @@ services:
       - mariadb-data:/var/lib/mysql
 
   redis:
-    image: redis:alpine
+    # Pinned for RECORDABILITY, not to change behaviour: `redis:alpine` and `8.10.2-alpine`
+    # resolve to the same digest today (sha256:2d3814be...), so this is a no-op at deploy time.
+    # `alpine` is a moving tag -- it was pushed 2026-09-21 and will move again -- which means the
+    # running Redis version cannot be *recorded*, and an unrecordable version cannot be evidenced
+    # against a 14-day patch standard. Bump this deliberately; see
+    # helper/docs/erp-patch-and-dependency-process.md (SAH-root helper/, not in this repo).
+    image: redis:8.10.2-alpine
+    restart: unless-stopped
 
   frappe:
-    image: frappe/bench:v5.28.0
+    image: frappe/bench:v5.31.0@sha256:6968600ad6524a150ee6cf2e1e58faa93932000565946abf1795c7f268751409
+    restart: unless-stopped
     command: bash /workspace/init.sh
     environment:
       - SHELL=/bin/bash
@@ -27,6 +36,8 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set — copy docker/.env.example to docker/.env for local dev}
       - DB_NAME=${DB_NAME:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set — copy docker/.env.example to docker/.env for local dev}
+      # Frappe's encryption_key, pinned so stored secrets survive a rebuilt container (docker/init.sh)
+      - ENCRYPTION_KEY=${FRAPPE_ENCRYPTION_KEY:?FRAPPE_ENCRYPTION_KEY must be set — copy docker/.env.example to docker/.env for local dev}
       # Support alternative RDS variable names (for compatibility with deployment scripts)
       - RDS_HOSTNAME=${RDS_HOSTNAME:-${DB_HOST:-}}
       - RDS_PORT=${RDS_PORT:-${DB_PORT:-3306}}
@@ -35,6 +46,8 @@ services:
       - RDS_DB_NAME=${RDS_DB_NAME:-${DB_NAME:-}}
       # Developer mode must stay OFF in staging/production; only local dev opts in via docker/.env
       - DEVELOPER_MODE=${DEVELOPER_MODE:-0}
+      # sah_crm branch to clone; each deploy workflow sets it for its own environment
+      - SAH_CRM_BRANCH=${SAH_CRM_BRANCH:-main}
       # Site name configuration
       - SITE_NAME=${SITE_NAME:-hrms.localhost}
       # Public site URL used for absolute links (emails, password reset, etc.)
@@ -48,9 +61,16 @@ services:
       - BUCKET_REGION=${BUCKET_REGION:-eu-west-2}
       - BUCKET_ENDPOINT=${BUCKET_ENDPOINT:-}
       - FILES_BACK_UP_HOURS=${FILES_BACK_UP_HOURS:-}
+      # Two-factor authentication policy (docker/configure_2fa.py); defaults enforce OTP-app 2FA for all users
+      - FRAPPE_2FA_ENABLED=${FRAPPE_2FA_ENABLED:-1}
+      - FRAPPE_2FA_ROLES=${FRAPPE_2FA_ROLES:-All}
+      - FRAPPE_2FA_ISSUER=${FRAPPE_2FA_ISSUER:-SAH ERP}
     working_dir: /home/frappe
     volumes:
       - .:/workspace
+      # sites/<site> (uploaded files, site_config.json) lives here so a deploy's
+      # `compose down` does not discard it; init.sh links it into the bench.
+      - frappe-site-data:/home/frappe/site-data
     ports:
       # Loopback only (VC-647). nginx on the host proxies 80/443 to these two ports.
       # Publishing them on 0.0.0.0 lets Docker route internet traffic straight to the
@@ -63,3 +83,4 @@ services:
 
 volumes:
   mariadb-data:
+  frappe-site-data:
