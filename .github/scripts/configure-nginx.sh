@@ -57,11 +57,21 @@ echo "=== Copying nginx config to instance ==="
 ssh -i "$SSH_KEY_PATH" -p "$LIGHTSAIL_PORT" -o StrictHostKeyChecking=accept-new "$LIGHTSAIL_USER@$LIGHTSAIL_HOST" << EOF
 set -e
 
+VHOST=/etc/nginx/sites-available/$SITE_NAME
+
+# Keep the running vhost so a config nginx rejects is never left in place (VC-652).
+echo "=== Keeping the previous config ==="
+if sudo test -f "\$VHOST"; then
+    sudo cp -p "\$VHOST" "\$VHOST.previous"
+else
+    sudo rm -f "\$VHOST.previous"
+fi
+
 echo "=== Moving config to sites-available ==="
-sudo mv $TEMP_REMOTE_PATH /etc/nginx/sites-available/$SITE_NAME
+sudo mv $TEMP_REMOTE_PATH "\$VHOST"
 
 echo "=== Creating symlink ==="
-sudo ln -sf /etc/nginx/sites-available/$SITE_NAME /etc/nginx/sites-enabled/$SITE_NAME
+sudo ln -sf "\$VHOST" /etc/nginx/sites-enabled/$SITE_NAME
 
 echo "=== Removing default site ==="
 sudo rm -f /etc/nginx/sites-enabled/default
@@ -70,7 +80,12 @@ echo "=== Testing nginx configuration ==="
 if sudo nginx -t; then
     echo "✓ Nginx configuration is valid"
 else
-    echo "Error: Nginx configuration test failed"
+    echo "Error: Nginx configuration test failed; restoring the previous config"
+    if sudo test -f "\$VHOST.previous"; then
+        sudo mv -f "\$VHOST.previous" "\$VHOST"
+    else
+        sudo rm -f "\$VHOST" /etc/nginx/sites-enabled/$SITE_NAME
+    fi
     exit 1
 fi
 
@@ -79,6 +94,23 @@ sudo systemctl reload nginx || sudo systemctl restart nginx
 
 echo "=== Verifying nginx status ==="
 sudo systemctl status nginx --no-pager -l || true
+
+# A green run must mean HTTPS is served: this is the check that would have caught the
+# 2026-09-24 prod run, which left nginx valid but listening on 80 only.
+echo "=== Verifying HTTPS and the HTTP redirect on this host ==="
+https_code=\$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+    --resolve "$CERTBOT_DOMAIN:443:127.0.0.1" "https://$CERTBOT_DOMAIN/login" || true)
+http_code=\$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+    --resolve "$CERTBOT_DOMAIN:80:127.0.0.1" "http://$CERTBOT_DOMAIN/login" || true)
+echo "  https: \$https_code   http: \$http_code"
+if [ "\$https_code" = "000" ] || [ -z "\$https_code" ]; then
+    echo "Error: nothing answered HTTPS with a valid certificate for $CERTBOT_DOMAIN"
+    exit 1
+fi
+if [ "\$http_code" != "301" ]; then
+    echo "Error: HTTP did not redirect to HTTPS (got \$http_code)"
+    exit 1
+fi
 
 echo "✓ Nginx configured successfully"
 EOF

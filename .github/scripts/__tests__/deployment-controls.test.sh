@@ -39,6 +39,10 @@
 #       is printed into the public deploy log (verify-site.sh saves it to a root-only file)
 #   T14 (VC-657) secret-scan.yml runs a pinned, checksum-verified gitleaks with --redact, holds
 #       no secrets, uses no gitleaks-action and passes no ${{ }} expression into a run: script
+#   T15 (VC-657) configure-nginx workflows are not triggered by edits to their own file
+#   T16 (VC-652) one rendered vhost for every environment: HTTP only redirects, HTTPS carries the
+#       security headers; the certificate is ensured first, certbot never rewrites the vhost,
+#       and configure-nginx.sh restores on a bad config and fails a run that does not serve HTTPS
 #
 # REPO_ROOT can be overridden to run the same assertions against another checkout, which is
 # how red-on-base and mutation runs are produced. Nothing here touches a network or AWS.
@@ -498,6 +502,95 @@ for env in prod staging dev; do
             "$(lf "$path" | grep -cE "^[[:space:]]*-[[:space:]]*'nginx/\*\*'[[:space:]]*$")"
     fi
 done
+echo
+
+# ---------------------------------------------------------------------------
+echo "T16: the nginx vhost serves HTTPS with security headers, and a run cannot drop TLS"
+# The 2026-09-24 prod outage: the workflow's inline template was HTTP-only, replaced the 443
+# block certbot had added, and setup-certbot.sh skipped the host because a cert existed.
+path="$REPO_ROOT/.github/scripts/render-nginx-conf.sh"
+if require_file T16 "$path"; then
+    t16_dir="$(mktemp -d)"
+    trap 'rm -rf "$t16_dir"' EXIT
+    conf="$t16_dir/nginx.conf"
+    bash "$path" erp.example.com "$conf" > /dev/null 2>&1
+    check "T16 render-nginx-conf.sh: renders for a hostname" 0 "$?"
+    if [ -f "$conf" ]; then
+        check "T16 vhost: exactly one listen 443 ssl" 1 "$(grep -cE '^[[:space:]]*listen[[:space:]]+443[[:space:]]+ssl' "$conf")"
+        check "T16 vhost: certificate is read from live/<domain>/" 1 \
+            "$(grep -cE '^[[:space:]]*ssl_certificate[[:space:]]+/etc/letsencrypt/live/erp\.example\.com/fullchain\.pem;' "$conf")"
+        check "T16 vhost: key is read from live/<domain>/" 1 \
+            "$(grep -cE '^[[:space:]]*ssl_certificate_key[[:space:]]+/etc/letsencrypt/live/erp\.example\.com/privkey\.pem;' "$conf")"
+        check "T16 vhost: ssl_protocols is TLSv1.2 TLSv1.3 only" 1 \
+            "$(grep -cE '^[[:space:]]*ssl_protocols[[:space:]]+TLSv1\.2[[:space:]]+TLSv1\.3;' "$conf")"
+        # Per server block: its listen port, whether it redirects, whether it proxies.
+        servers="$(awk '
+            /^server[[:space:]]*\{/ { in_s = 1; depth = 0; port = ""; redir = 0; proxy = 0 }
+            in_s {
+                if (match($0, /listen[[:space:]]+[0-9]+/)) { split(substr($0, RSTART, RLENGTH), a, /[[:space:]]+/); port = a[2] }
+                if ($0 ~ /return[[:space:]]+301[[:space:]]+https:\/\//) redir = 1
+                if ($0 ~ /proxy_pass/) proxy = 1
+                depth += gsub(/\{/, "{"); depth -= gsub(/\}/, "}")
+                if (depth == 0) { printf "%s:%s:%s ", port, redir, proxy; in_s = 0 }
+            }' "$conf")"
+        check "T16 vhost: port 80 only redirects to https, port 443 proxies to Frappe" "80:1:0 443:0:1 " "$servers"
+        # A block with its own add_header drops the inherited ones, so every block that sets
+        # any header must set all four.
+        missing="$(awk '
+            { line = $0 }
+            line ~ /\{/ { n++; stack[++sp] = n }
+            line ~ /add_header/ { has[stack[sp]] = 1
+                if (line ~ /Strict-Transport-Security "max-age=[0-9]+" always;/) h[stack[sp], 1] = 1
+                if (line ~ /X-Content-Type-Options "nosniff" always;/) h[stack[sp], 2] = 1
+                if (line ~ /X-Frame-Options "(SAMEORIGIN|DENY)" always;/) h[stack[sp], 3] = 1
+                if (line ~ /Referrer-Policy "[a-z-]+" always;/) h[stack[sp], 4] = 1 }
+            line ~ /\}/ { sp-- }
+            END { blocks = 0; bad = 0
+                for (b in has) { blocks++; for (i = 1; i <= 4; i++) if (!h[b, i]) bad++ }
+                print blocks ":" bad }' "$conf")"
+        check "T16 vhost: both header blocks (server, /assets) carry all four security headers" "2:0" "$missing"
+    else
+        fail "T16 render-nginx-conf.sh: produced no file"
+    fi
+    bash "$path" 'erp.example.com;include /etc/passwd' "$t16_dir/bad.conf" > /dev/null 2>&1
+    check "T16 render-nginx-conf.sh: rejects a domain that is not a hostname" 1 "$?"
+    check "T16 render-nginx-conf.sh: writes nothing for a rejected domain" no "$([ -e "$t16_dir/bad.conf" ] && echo yes || echo no)"
+    rm -rf "$t16_dir"
+fi
+for env in prod staging dev; do
+    path="$WORKFLOW_DIR/configure-nginx-$env.yml"
+    require_file T16 "$path" || continue
+    check "T16 configure-nginx-$env.yml: renders the vhost with render-nginx-conf.sh" 1 \
+        "$(lf "$path" | grep -c '\.github/scripts/render-nginx-conf\.sh')"
+    check "T16 configure-nginx-$env.yml: carries no inline vhost" 0 "$(lf "$path" | grep -cE 'listen[[:space:]]+[0-9]+')"
+    order="$(lf "$path" | awk '
+        /- name: Setup SSL certificate/ && !c { c = NR }
+        /- name: Configure Nginx$/ && !n { n = NR }
+        END { print ((c && n && c < n) ? "cert-first" : "wrong:" c "," n) }')"
+    check "T16 configure-nginx-$env.yml: the certificate is ensured before the vhost is installed" cert-first "$order"
+done
+path="$REPO_ROOT/.github/scripts/setup-certbot.sh"
+if require_file T16 "$path"; then
+    check "T16 setup-certbot.sh: never lets certbot rewrite the vhost (no 'certbot --nginx')" 0 \
+        "$(lf "$path" | grep -cE 'certbot[[:space:]]+--nginx')"
+    check "T16 setup-certbot.sh: issues with 'certbot certonly --nginx' (non-vacuous)" 1 \
+        "$(lf "$path" | grep -cE 'certbot[[:space:]]+certonly[[:space:]]+--nginx')"
+    check "T16 setup-certbot.sh: pins --cert-name to the domain" 1 "$(lf "$path" | grep -cE -- '--cert-name[[:space:]]+\$CERTBOT_DOMAIN')"
+    check "T16 setup-certbot.sh: reloads nginx after renewal" 1 "$(lf "$path" | grep -cE -- '--deploy-hook "systemctl reload nginx"')"
+    check "T16 setup-certbot.sh: an existing cert must be at live/<domain>/" 1 \
+        "$(lf "$path" | grep -cF 'test -f /etc/letsencrypt/live/$CERTBOT_DOMAIN/fullchain.pem')"
+fi
+path="$REPO_ROOT/.github/scripts/configure-nginx.sh"
+if require_file T16 "$path"; then
+    # shellcheck disable=SC2016
+    check "T16 configure-nginx.sh: restores the previous vhost when nginx -t fails" 1 \
+        "$(lf "$path" | grep -cF 'sudo mv -f "\$VHOST.previous" "\$VHOST"')"
+    # shellcheck disable=SC2016
+    check "T16 configure-nginx.sh: checks HTTPS on the host after reload" 1 \
+        "$(lf "$path" | grep -cF -- '--resolve "$CERTBOT_DOMAIN:443:127.0.0.1"')"
+    # shellcheck disable=SC2016
+    check "T16 configure-nginx.sh: fails unless HTTP redirects (301)" 1 "$(lf "$path" | grep -cF 'if [ "\$http_code" != "301" ]')"
+fi
 echo
 
 echo "-----------------------------------------"
