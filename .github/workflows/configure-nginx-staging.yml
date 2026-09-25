@@ -69,34 +69,20 @@ jobs:
       - name: Generate Nginx configuration
         run: |
           source ${{ github.workspace }}/secrets.env
-          cat > ${{ github.workspace }}/nginx.conf << EOF
-          upstream frappe {
-              server localhost:8000;
-          }
-          
-          server {
-              listen 80;
-              server_name $CERTBOT_DOMAIN;
-              
-              client_max_body_size 50M;
-              
-              location / {
-                  proxy_pass http://frappe;
-                  proxy_set_header Host \$host;
-                  proxy_set_header X-Real-IP \$remote_addr;
-                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto \$scheme;
-                  proxy_read_timeout 300s;
-              }
-              
-              location /assets {
-                  proxy_pass http://frappe;
-                  expires 7d;
-                  add_header Cache-Control "public, immutable";
-              }
-          }
-          EOF
-          echo "✓ Nginx configuration generated"
+          .github/scripts/render-nginx-conf.sh \
+            "$CERTBOT_DOMAIN" \
+            "${{ github.workspace }}/nginx.conf"
+
+      - name: Setup SSL certificate
+        # Before Configure Nginx: the vhost it installs references this certificate (VC-652).
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          .github/scripts/setup-certbot.sh \
+            "$CERTBOT_DOMAIN" \
+            "$CERTBOT_EMAIL" \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
 
       - name: Configure Nginx
         run: |
@@ -105,16 +91,6 @@ jobs:
             "$SITE_NAME" \
             "$CERTBOT_DOMAIN" \
             "${{ github.workspace }}/nginx.conf" \
-            "$lightsail_user" \
-            "$lightsail_host" \
-            "${lightsail_port:-22}"
-
-      - name: Setup SSL certificate
-        run: |
-          source ${{ github.workspace }}/secrets.env
-          .github/scripts/setup-certbot.sh \
-            "$CERTBOT_DOMAIN" \
-            "$CERTBOT_EMAIL" \
             "$lightsail_user" \
             "$lightsail_host" \
             "${lightsail_port:-22}"
