@@ -53,11 +53,12 @@ chmod +x "$WORK/bin/sudo"
 
 sed -n '/^link_site_dir() {/,/^}/p' "$INIT_SH" > "$WORK/link_site_dir.sh"
 sed -n '/^ensure_encryption_key() {/,/^}/p' "$INIT_SH" > "$WORK/ensure_encryption_key.sh"
+sed -n '/^ensure_site_dirs() {/,/^}/p' "$INIT_SH" > "$WORK/ensure_site_dirs.sh"
 
 echo "Testing site persistence in: $INIT_SH"
 echo
 
-echo "T0: both functions exist in init.sh"
+echo "T0: the functions exist in init.sh"
 check "link_site_dir extracted" 1 "$(grep -c '^link_site_dir() {' "$WORK/link_site_dir.sh")"
 check "ensure_encryption_key extracted" 1 "$(grep -c '^ensure_encryption_key() {' "$WORK/ensure_encryption_key.sh")"
 echo
@@ -223,6 +224,29 @@ fi
 check "every bench new-site path marks SITE_CREATED" 2 "$(grep -c '^ *SITE_CREATED=true$' "$INIT_SH")"
 check "ENCRYPTION_KEY is required at the top of init.sh" 1 \
     "$(grep -c '^: "${ENCRYPTION_KEY:?' "$INIT_SH")"
+echo
+
+echo "T12: the site's files folders exist on every boot, including an attached site"
+# Staging, 2026-09-25: the RDS attach path made bare private/ and public/, and every upload
+# failed with FileNotFoundError on ./<site>/private/files/<name>.
+check "ensure_site_dirs extracted" 1 "$(grep -c '^ensure_site_dirs() {' "$WORK/ensure_site_dirs.sh")"
+S="$WORK/t12"; mkdir -p "$S/bench/sites/site.test/private" "$S/bench/sites/site.test/public/files"
+echo keep > "$S/bench/sites/site.test/public/files/existing.png"
+run_dirs() { bash -c "set -e; BENCH_DIR='$S/bench'; SITE_NAME=site.test; source '$WORK/ensure_site_dirs.sh'; ensure_site_dirs"; echo $?; }
+check "exited 0" 0 "$(run_dirs)"
+for d in public/files private/files private/backups locks logs; do
+    check "$d exists" yes "$([ -d "$S/bench/sites/site.test/$d" ] && echo yes || echo no)"
+done
+check "an existing file is left alone" keep "$(cat "$S/bench/sites/site.test/public/files/existing.png")"
+check "a second run is a no-op" 0 "$(run_dirs)"
+call=$(grep -n '^ensure_site_dirs$' "$INIT_SH" | head -1 | cut -d: -f1)
+final_key=$(grep -n '^    ensure_encryption_key adopt$' "$INIT_SH" | head -1 | cut -d: -f1)
+bench_start=$(grep -n '^bench start$' "$INIT_SH" | head -1 | cut -d: -f1)
+if [ -n "$call" ] && [ -n "$final_key" ] && [ -n "$bench_start" ] && [ "$final_key" -lt "$call" ] && [ "$call" -lt "$bench_start" ]; then
+    pass "called after every site setup path ($final_key) and before the server starts ($bench_start)"
+else
+    fail "ensure_site_dirs call ($call) is not between site setup ($final_key) and bench start ($bench_start)"
+fi
 echo
 
 echo "-----------------------------------------"

@@ -511,6 +511,17 @@ else
     ensure_encryption_key strict
 fi
 
+# `bench new-site` creates these (frappe.installer.make_site_dirs); the attach paths above only
+# make bare private/ and public/. Frappe writes an upload without creating its folder, so a
+# missing private/files or public/files fails every upload with FileNotFoundError.
+ensure_site_dirs() {
+    local dir
+    for dir in public/files private/files private/backups locks logs; do
+        mkdir -p "$BENCH_DIR/sites/$SITE_NAME/$dir"
+    done
+}
+ensure_site_dirs
+
 # Ensure the site knows its public URL so generated links use the correct host
 if [ -n "$SITE_URL" ]; then
     HOST_URL="${SITE_URL%/}"
