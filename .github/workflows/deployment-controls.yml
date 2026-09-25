@@ -41,6 +41,9 @@ jobs:
       - name: Site-detection probe and DB password handling (init.sh)
         run: bash docker/__tests__/init-db-probe.test.sh
 
+      - name: Site data volume and pinned encryption key (init.sh)
+        run: bash docker/__tests__/init-site-persistence.test.sh
+
       - name: S3 file-sync keeps keys off argv (sync-files-to-s3.sh)
         run: bash scripts/__tests__/sync-files-to-s3.test.sh
 

@@ -94,6 +94,7 @@ Secret names are not recorded here. The staging name is the module default in `t
 | `BUCKET_NAME`, `BUCKET_ENDPOINT`, `BUCKET_ACCESS_KEY_ID`, `BUCKET_SECRET_ACCESS_KEY`, `BUCKET_REGION` | terraform storage module (dedicated IAM user) | Container backup and fetch scripts via `docker/bucket-env.sh` |
 | `CERTBOT_DOMAIN`, `CERTBOT_EMAIL`, `SITE_NAME`, `SITE_URL`, `EXISTING_SITE`, `UPDATE_CODE`, `FILES_BACK_UP_HOURS` | terraform | Workflows and container |
 | `encryption_key` | UNVERIFIED (not in terraform; written out-of-band) | No consumer in this repository: nothing copies it to the box or into `site_config.json`. Origin and any out-of-band consumer are UNVERIFIED; runbook step 0b settles whether the leaked value is live. |
+| `FRAPPE_ENCRYPTION_KEY` | Added by hand to each environment's deploy secret (VC-644) | Required by `generate-env-file.sh` and compose; `docker/init.sh` writes it into `site_config.json` and refuses to boot when the site holds a different key; `verify-site.sh` fails a deploy whose site key does not match. Never printed. Losing it makes every stored secret unreadable. |
 
 Readers of the Secrets Manager secret: the three static IAM users whose keys sit in GitHub secrets, plus any AWS principal with `secretsmanager:GetSecretValue` on the ARN. The IAM policy attached to those users was not reviewed here and is UNVERIFIED.
 
