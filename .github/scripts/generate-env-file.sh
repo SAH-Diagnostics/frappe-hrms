@@ -74,7 +74,12 @@ echo "Writing environment variables to $OUTPUT_ENV_FILE..."
 declare -A SECRETS_MAP
 
 # Load secrets into map
-while IFS='=' read -r key value || [ -n "$key" ]; do
+# Split on the first '=' only. `IFS='=' read -r key value` drops a trailing '=' from the value
+# under bash 5 (the runners), which truncates base64 secrets such as FRAPPE_ENCRYPTION_KEY.
+while IFS= read -r line || [ -n "$line" ]; do
+    key="${line%%=*}"
+    value=""
+    [[ "$line" == *=* ]] && value="${line#*=}"
     # Skip comments and empty lines
     [[ "$key" =~ ^#.*$ ]] && continue
     [[ -z "$key" ]] && continue

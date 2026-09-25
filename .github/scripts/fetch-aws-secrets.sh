@@ -75,7 +75,8 @@ PYTHON_EOF
     rm -f "$TEMP_JSON"
 elif command -v jq &> /dev/null; then
     # Use jq to parse JSON
-    echo "$SECRET_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' | while IFS='=' read -r key value; do
+    echo "$SECRET_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' | while IFS= read -r line; do
+        key="${line%%=*}"; value="${line#*=}"  # first '=' only; keeps a trailing '=' (base64)
         # Mask sensitive values for GitHub Actions
         echo "::add-mask::$value"
         echo "${key}=${value}" >> "$OUTPUT_FILE"

@@ -87,7 +87,7 @@ echo "generate-env-file.sh"
 if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     # The deploy runs this on ubuntu runners; `declare -A` needs bash 4+. Local macOS ships 3.2:
     #   docker run --rm -v "$PWD":/w -w /w bash:5 bash docker/__tests__/init-2fa-policy.test.sh
-    echo "  SKIP: T6-T8 need bash >= 4 (this is ${BASH_VERSION}) — run in bash:5, see comment"
+    echo "  SKIP: T6-T8, T11 need bash >= 4 (this is ${BASH_VERSION}) — run in bash:5, see comment"
 else
 REQUIRED=(AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION BUCKET_ACCESS_KEY_ID BUCKET_SECRET_ACCESS_KEY
     BUCKET_ENDPOINT BUCKET_NAME BUCKET_REGION DATABASE_ENDPOINT DATABASE_NAME DATABASE_PASSWORD DATABASE_PORT
@@ -110,6 +110,17 @@ if grep -qx 'FRAPPE_2FA_ROLES=2FA-Pilot' "$TMP/env.with" && grep -qx 'FRAPPE_2FA
     ok "T7 optional 2FA vars present in the secret are passed through"
 else
     bad "T7 optional 2FA vars were not passed through: $(grep FRAPPE_2FA "$TMP/env.with" 2>/dev/null)"
+fi
+
+# A Fernet key ends in one '=' with no other '='; bash 5 `IFS='=' read` drops exactly that one, so the
+# key reached the box truncated and init.sh refused to boot (staging, 2026-09-25).
+grep -vE '^(FRAPPE_ENCRYPTION_KEY|ADMIN_PASSWORD)=' "$TMP/secrets" > "$TMP/secrets.pad"
+printf 'FRAPPE_ENCRYPTION_KEY=pad-test=\nADMIN_PASSWORD=a=b=\n' >> "$TMP/secrets.pad"
+bash "$GEN_ENV" "$TMP/secrets.pad" "$TMP/env.pad" >/dev/null 2>&1
+if grep -qx 'FRAPPE_ENCRYPTION_KEY=pad-test=' "$TMP/env.pad" && grep -qx 'ADMIN_PASSWORD=a=b=' "$TMP/env.pad"; then
+    ok "T11 values keep every '=' after the first, including trailing padding"
+else
+    bad "T11 '=' in a value was lost: $(grep -E '^(FRAPPE_ENCRYPTION_KEY|ADMIN_PASSWORD)=' "$TMP/env.pad" 2>/dev/null)"
 fi
 
 grep -v '^SITE_URL=' "$TMP/secrets.with" > "$TMP/secrets.broken"
