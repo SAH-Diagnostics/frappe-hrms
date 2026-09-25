@@ -102,16 +102,16 @@ if sudo install -d -m 700 "$FAILURE_LOG_DIR" \
     {
         echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') verify-site failure: $HEALTHCHECK_URL ==="
         echo "=== Container status ==="
-        sudo docker compose -f "$COMPOSE_FILE" ps 2>&1 || true
+        sudo docker compose --env-file "$DEPLOY_DIR/.env" -f "$COMPOSE_FILE" ps 2>&1 || true
         echo "=== Last 100 log lines ==="
-        sudo docker compose -f "$COMPOSE_FILE" logs --tail=100 2>&1 || true
+        sudo docker compose --env-file "$DEPLOY_DIR/.env" -f "$COMPOSE_FILE" logs --tail=100 2>&1 || true
     } | sudo tee "$FAILURE_LOG" >/dev/null || true
     sudo chmod 600 "$FAILURE_LOG" || true
     echo "Container status and logs saved on the box to $FAILURE_LOG (root-only)." >&2
     echo "Read them there with: sudo cat $FAILURE_LOG" >&2
 else
     echo "WARNING: could not create $FAILURE_LOG; logs were not saved." >&2
-    echo "Read them on the box with: sudo docker compose -f $COMPOSE_FILE logs" >&2
+    echo "Read them on the box with: sudo docker compose --env-file $DEPLOY_DIR/.env -f $COMPOSE_FILE logs" >&2
 fi
 
 exit 1
