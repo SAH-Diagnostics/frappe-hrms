@@ -105,6 +105,10 @@ fi
 echo "=== Deploying with Docker Compose ==="
 cd $DEPLOY_DIR
 
+# Before down: the first deploy with the site-data volume copies the running container's
+# uploaded files into it, or they would be discarded with the container.
+bash $DEPLOY_DIR/.github/scripts/remote/seed-site-volume.sh $DEPLOY_DIR $DOCKER_COMPOSE_FILE
+
 # Use docker compose (plugin) with explicit env file
 sudo docker compose --env-file $DEPLOY_DIR/.env -f $DOCKER_COMPOSE_FILE down || true
 sudo docker compose --env-file $DEPLOY_DIR/.env -f $DOCKER_COMPOSE_FILE up -d --build

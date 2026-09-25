@@ -43,6 +43,9 @@
 #   T16 (VC-652) one rendered vhost for every environment: HTTP only redirects, HTTPS carries the
 #       security headers; the certificate is ensured first, certbot never rewrites the vhost,
 #       and configure-nginx.sh restores on a bad config and fails a run that does not serve HTTPS
+#   T17 (VC-644) sites/<site> lives on the frappe-site-data volume and the encryption_key is a
+#       required deploy secret; nothing removes the volume, and the first deploy with it copies
+#       the running container's files in before `compose down` (never its random key)
 #
 # REPO_ROOT can be overridden to run the same assertions against another checkout, which is
 # how red-on-base and mutation runs are produced. Nothing here touches a network or AWS.
@@ -590,6 +593,84 @@ if require_file T16 "$path"; then
         "$(lf "$path" | grep -cF -- '--resolve "$CERTBOT_DOMAIN:443:127.0.0.1"')"
     # shellcheck disable=SC2016
     check "T16 configure-nginx.sh: fails unless HTTP redirects (301)" 1 "$(lf "$path" | grep -cF 'if [ "\$http_code" != "301" ]')"
+fi
+echo
+
+echo "T17: site data and the encryption key survive a deploy"
+# Every deploy runs `compose down && up`. The bench, including sites/<site>, lived inside the
+# container, so each deploy discarded uploaded files and site_config.json -- whose rebuilt
+# copy had no encryption_key, so Frappe generated a random one and every stored secret became
+# undecryptable (prod: "Failed to decrypt key ...otpsecret").
+compose="$REPO_ROOT/docker/docker-compose.yml"
+if require_file T17 "$compose"; then
+    check "T17 compose: frappe-site-data is a declared named volume" 1 "$(lf "$compose" | grep -cE '^  frappe-site-data:[[:space:]]*$')"
+    check "T17 compose: frappe mounts it at /home/frappe/site-data" 1 \
+        "$(lf "$compose" | grep -cE '^[[:space:]]+- frappe-site-data:/home/frappe/site-data[[:space:]]*$')"
+    # A mount inside the bench creates $BENCH_DIR before `bench init`, which init.sh then skips.
+    check "T17 compose: no mount inside /home/frappe/frappe-bench" 0 "$(lf "$compose" | grep -cE ':/home/frappe/frappe-bench')"
+    check "T17 compose: ENCRYPTION_KEY comes from FRAPPE_ENCRYPTION_KEY and is required" 1 \
+        "$(lf "$compose" | grep -cF -- '- ENCRYPTION_KEY=${FRAPPE_ENCRYPTION_KEY:?')"
+fi
+path="$REPO_ROOT/.github/scripts/generate-env-file.sh"
+if require_file T17 "$path"; then
+    check "T17 generate-env-file.sh: FRAPPE_ENCRYPTION_KEY is a REQUIRED variable" 1 \
+        "$(lf "$path" | sed -n '/^REQUIRED_VARS=(/,/^)/p' | grep -cxF '    "FRAPPE_ENCRYPTION_KEY"')"
+fi
+destroyers="$(grep -rnE 'down[[:space:]]+(-v|--volumes)|volume[[:space:]]+(rm|prune)|system[[:space:]]+prune' \
+    "$REPO_ROOT/.github" "$REPO_ROOT/docker" "$REPO_ROOT/scripts" 2>/dev/null | grep -v '__tests__' | wc -l | tr -d ' ')"
+check "T17 nothing under .github/, docker/ or scripts/ removes a volume" 0 "$destroyers"
+path="$REPO_ROOT/.github/scripts/deploy-docker-app.sh"
+if require_file T17 "$path"; then
+    seed_line="$(lf "$path" | grep -n 'remote/seed-site-volume.sh' | head -1 | cut -d: -f1)"
+    down_line="$(lf "$path" | grep -n 'docker compose .* down' | head -1 | cut -d: -f1)"
+    if [ -n "$seed_line" ] && [ -n "$down_line" ] && [ "$seed_line" -lt "$down_line" ]; then
+        pass "T17 deploy-docker-app.sh: seeds the volume before compose down"
+    else
+        fail "T17 deploy-docker-app.sh: seed ($seed_line) does not run before compose down ($down_line)"
+    fi
+fi
+seed="$REPO_ROOT/.github/scripts/remote/seed-site-volume.sh"
+if require_file T17 "$seed"; then
+    check "T17 seed-site-volume.sh: never copies site_config.json (its key is the random one)" 0 \
+        "$(lf "$seed" | grep -v '^[[:space:]]*#' | grep -c 'site_config')"
+    t17_dir="$(mktemp -d)"
+    mkdir -p "$t17_dir/bin" "$t17_dir/deploy"
+    printf 'SITE_NAME="erp.example.com"\nDB_PASSWORD=x\n' > "$t17_dir/deploy/.env"
+    cat > "$t17_dir/bin/sudo" <<'STUB'
+#!/usr/bin/env bash
+exec "$@"
+STUB
+    cat > "$t17_dir/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$T17_LOG"
+case "$*" in
+    *" ps -q frappe"*) [ -n "${NO_CONTAINER:-}" ] || echo cid123 ;;
+    "exec cid123 test -L "*) [ -n "${LINKED:-}" ] ;;
+    "exec cid123 test -d "*) exit 0 ;;
+    "cp cid123:"*) echo "TAR ${2##*/}" ;;
+    *" run "*"test -e "*) [ -n "${VOLUME_HAS_SITE:-}" ] ;;
+    *" run "*"tar -x"*) cat >> "$T17_LOG.tar" ;;
+    *" run "*"wc -l"*) echo " 3" ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "$t17_dir/bin/sudo" "$t17_dir/bin/docker"
+    run_seed() { # $1 = scenario name; env from the caller
+        : > "$t17_dir/$1.log"
+        T17_LOG="$t17_dir/$1.log" PATH="$t17_dir/bin:$PATH" \
+            bash "$seed" "$t17_dir/deploy" docker/docker-compose.yml > "$t17_dir/$1.out" 2>&1
+        echo $?
+    }
+    check "T17 seed: first deploy exits 0" 0 "$(run_seed fresh)"
+    check "T17 seed: copies public/ and private/ out of the container" 2 "$(grep -cE '^cp cid123:/home/frappe/frappe-bench/sites/erp\.example\.com/(public|private) -$' "$t17_dir/fresh.log")"
+    check "T17 seed: both streams reach the volume" "TAR public TAR private" "$(tr '\n' ' ' < "$t17_dir/fresh.log.tar" | sed 's/ $//')"
+    check "T17 seed: hands the volume to uid 1000" 1 "$(grep -c 'chown -R 1000:1000 /home/frappe/site-data' "$t17_dir/fresh.log")"
+    check "T17 seed: reports the count only" 1 "$(grep -c 'Seeded the volume with 3 file(s)' "$t17_dir/fresh.out")"
+    check "T17 seed: runs with the deploy env file" 0 "$(grep ' run ' "$t17_dir/fresh.log" | grep -vc -- "--env-file $t17_dir/deploy/.env")"
+    check "T17 seed: no running container -> exits 0, copies nothing" "0 0" "$(NO_CONTAINER=1 run_seed none) $(grep -c '^cp ' "$t17_dir/none.log")"
+    check "T17 seed: container already on the volume -> copies nothing" "0 0" "$(LINKED=1 run_seed linked) $(grep -c '^cp ' "$t17_dir/linked.log")"
+    check "T17 seed: volume already holds the site -> never overwritten" "0 0" "$(VOLUME_HAS_SITE=1 run_seed full) $(grep -c '^cp ' "$t17_dir/full.log")"
+    rm -rf "$t17_dir"
 fi
 echo
 
