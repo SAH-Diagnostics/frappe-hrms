@@ -110,11 +110,11 @@ echo "T2: the logs are saved to a root-only file on the box"
 if [ -f "$LOG1" ]; then
     pass "failure log written at \$FAILURE_LOG_DIR/last-failure.log"
     check "failure log holds the container logs (non-vacuous)" 1 \
-        "$(grep -c "$MARKER stdout (compose -f docker-compose.yml logs" "$LOG1")"
+        "$(grep -cE "$MARKER stdout \\(compose --env-file [^ ]+/\\.env -f docker-compose\\.yml logs" "$LOG1")"
     check "failure log holds the container logs' stderr too" 1 \
-        "$(grep -c "$MARKER stderr (compose -f docker-compose.yml logs" "$LOG1")"
+        "$(grep -cE "$MARKER stderr \\(compose --env-file [^ ]+/\\.env -f docker-compose\\.yml logs" "$LOG1")"
     check "failure log holds the container status" 1 \
-        "$(grep -c "$MARKER stdout (compose -f docker-compose.yml ps" "$LOG1")"
+        "$(grep -cE "$MARKER stdout \\(compose --env-file [^ ]+/\\.env -f docker-compose\\.yml ps" "$LOG1")"
     check "failure log is mode 600" 600 "$(mode_of "$LOG1")"
     check "failure log dir is mode 700" 700 "$(mode_of "$(dirname "$LOG1")")"
 else

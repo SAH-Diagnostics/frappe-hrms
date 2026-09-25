@@ -116,7 +116,7 @@ sudo docker compose --env-file $DEPLOY_DIR/.env -f $DOCKER_COMPOSE_FILE up -d --
 
 echo "=== Verifying containers ==="
 sleep 5
-sudo docker compose -f $DOCKER_COMPOSE_FILE ps
+sudo docker compose --env-file $DEPLOY_DIR/.env -f $DOCKER_COMPOSE_FILE ps
 
 # Container logs are NOT printed: this job's output is a public Actions log, and bench /
 # init.sh output can carry credentials. On a failed verification, verify-site.sh writes them

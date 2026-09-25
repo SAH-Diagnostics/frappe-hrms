@@ -631,6 +631,12 @@ if require_file T17 "$path"; then
     check "T17 deploy-docker-app.sh: the seed gets </dev/null, not the heredoc's stdin" 1 \
         "$(lf "$path" | grep -cE 'remote/seed-site-volume\.sh .*< /dev/null[[:space:]]*$')"
 fi
+# FRAPPE_ENCRYPTION_KEY is required at interpolation, so a compose call without the deploy env
+# file fails outright (staging, 2026-09-25: `compose ps` after `up` failed the deploy).
+no_env_file="$(cat "$REPO_ROOT/.github/scripts/deploy-docker-app.sh" "$REPO_ROOT"/.github/scripts/remote/*.sh \
+    | grep -v '^[[:space:]]*#' | grep -E 'docker compose .*-f ' | grep -vc -- '--env-file')"
+check "T17 every compose -f call on the box passes the deploy env file" 0 "$no_env_file"
+
 seed="$REPO_ROOT/.github/scripts/remote/seed-site-volume.sh"
 if require_file T17 "$seed"; then
     check "T17 seed-site-volume.sh: never copies site_config.json (its key is the random one)" 0 \
