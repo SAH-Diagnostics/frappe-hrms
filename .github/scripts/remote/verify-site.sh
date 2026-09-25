@@ -11,7 +11,7 @@
 # ever answered. A container that exits on its first command, or a bench that fails
 # halfway through provisioning, both produced a green deploy.
 #
-# The wait has to be generous. `sites/` is not a volume, so `compose down && up` rebuilds
+# The wait has to be generous. Only sites/<site> is on a volume, so `compose down && up` rebuilds
 # the bench from scratch -- cloning frappe, erpnext, hrms and sah_crm and running migrate.
 # That is minutes, not seconds. A short timeout here would turn a slow-but-healthy deploy
 # into a red build, so the default window is 15 minutes and every attempt is announced.
@@ -36,6 +36,36 @@ FAILURE_LOG="$FAILURE_LOG_DIR/last-failure.log"
 
 cd "$DEPLOY_DIR" || { echo "FATAL: $DEPLOY_DIR is not accessible." >&2; exit 1; }
 
+# A site that answers can still be one deploy away from losing its data: stored secrets are
+# encrypted with site_config's encryption_key, and site_config only survives the next
+# `compose down` when the site directory is on the frappe-site-data volume. Prints one state
+# word; never the key.
+check_site_persistence() {
+    local state
+    state="$(sudo docker compose --env-file "$DEPLOY_DIR/.env" -f "$COMPOSE_FILE" exec -T frappe python3 - 2>/dev/null <<'PY'
+import json, os
+site_dir = "/home/frappe/frappe-bench/sites/" + os.environ.get("SITE_NAME", "")
+try:
+    with open(site_dir + "/site_config.json") as f:
+        current = json.load(f).get("encryption_key")
+except Exception:
+    print("unreadable")
+    raise SystemExit
+key = "match" if current and current == os.environ.get("ENCRYPTION_KEY") else "absent" if not current else "mismatch"
+print(key + (":volume" if os.path.islink(site_dir) else ":no-volume"))
+PY
+)" || state="unreachable"
+
+    if [ "$state" = "match:volume" ]; then
+        echo "✓ encryption_key matches the deploy secret and the site directory is on the volume"
+        return 0
+    fi
+    echo "FATAL: site persistence check failed (state: ${state:-empty})." >&2
+    echo "Expected the pinned encryption_key and sites/<site> on the frappe-site-data volume;" >&2
+    echo "without both, the next deploy loses stored secrets or uploaded files." >&2
+    return 1
+}
+
 echo "=== Verifying site at $HEALTHCHECK_URL (up to ${TIMEOUT_SECONDS}s) ==="
 
 elapsed=0
@@ -48,6 +78,7 @@ while [ "$elapsed" -lt "$TIMEOUT_SECONDS" ]; do
     case "$http_code" in
         2??|3??)
             echo "attempt ${attempt} (${elapsed}s): HTTP ${http_code} -- site is up"
+            check_site_persistence || exit 1
             echo "=== Site verified ==="
             exit 0
             ;;

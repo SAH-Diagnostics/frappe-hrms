@@ -36,6 +36,8 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set — copy docker/.env.example to docker/.env for local dev}
       - DB_NAME=${DB_NAME:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set — copy docker/.env.example to docker/.env for local dev}
+      # Frappe's encryption_key, pinned so stored secrets survive a rebuilt container (docker/init.sh)
+      - ENCRYPTION_KEY=${FRAPPE_ENCRYPTION_KEY:?FRAPPE_ENCRYPTION_KEY must be set — copy docker/.env.example to docker/.env for local dev}
       # Support alternative RDS variable names (for compatibility with deployment scripts)
       - RDS_HOSTNAME=${RDS_HOSTNAME:-${DB_HOST:-}}
       - RDS_PORT=${RDS_PORT:-${DB_PORT:-3306}}
@@ -66,6 +68,9 @@ services:
     working_dir: /home/frappe
     volumes:
       - .:/workspace
+      # sites/<site> (uploaded files, site_config.json) lives here so a deploy's
+      # `compose down` does not discard it; init.sh links it into the bench.
+      - frappe-site-data:/home/frappe/site-data
     ports:
       # Loopback only (VC-647). nginx on the host proxies 80/443 to these two ports.
       # Publishing them on 0.0.0.0 lets Docker route internet traffic straight to the
@@ -78,3 +83,4 @@ services:
 
 volumes:
   mariadb-data:
+  frappe-site-data:

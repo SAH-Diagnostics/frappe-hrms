@@ -56,6 +56,15 @@ exec "$@"
 STUB
     cat > "$1/docker" <<'STUB'
 #!/usr/bin/env bash
+# The persistence check execs python3 in the container; answer with the scenario's state.
+case " $* " in
+    *" exec "*)
+        cat > /dev/null
+        [ "${PERSISTENCE_STATE:-match:volume}" = "unreachable" ] && exit 1
+        echo "${PERSISTENCE_STATE:-match:volume}"
+        exit 0
+        ;;
+esac
 echo "SECRET-LOG-LINE stdout ($*)"
 echo "SECRET-LOG-LINE stderr ($*)" >&2
 exit 0
@@ -151,6 +160,48 @@ if git -C "$SCRIPT_DIR" show "$PRE_FIX_REF:.github/scripts/remote/verify-site.sh
     fi
 else
     fail "could not read $PRE_FIX_REF:.github/scripts/remote/verify-site.sh -- the control did not run (fetch full history)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# T6-T8 — the site must answer AND be one that survives the next deploy: the pinned
+#          encryption_key in site_config.json, and sites/<site> on the frappe-site-data volume.
+echo "T6: a healthy site passes only with the pinned key on the volume"
+for state in match:volume mismatch:volume absent:volume match:no-volume unreadable:no-volume unreachable; do
+    S6="$WORK/s6-${state//:/-}"; make_stubs "$S6/bin" 200
+    PERSISTENCE_STATE="$state" run_verify "$SCRIPT_UNDER_TEST" "$S6/bin" "$S6"
+    if [ "$state" = "match:volume" ]; then
+        check "state $state: exited 0" 0 "$(cat "$S6/status")"
+        check "state $state: reported the site verified" 1 "$(grep -c 'Site verified' "$S6/stdout")"
+    else
+        check "state $state: exited 1 (the deploy goes red)" 1 "$(cat "$S6/status")"
+        check "state $state: stderr names the persistence failure" 1 \
+            "$(grep -c 'FATAL: site persistence check failed' "$S6/stderr")"
+        check "state $state: not reported as verified" 0 "$(grep -c 'Site verified' "$S6/stdout")"
+    fi
+done
+echo
+
+echo "T7: the check runs inside the frappe container with the deploy's env file"
+if grep -qF 'sudo docker compose --env-file "$DEPLOY_DIR/.env" -f "$COMPOSE_FILE" exec -T frappe python3 -' "$SCRIPT_UNDER_TEST"; then
+    pass "check execs python3 in the frappe service with --env-file"
+else
+    fail "check does not exec in the frappe service with the deploy env file"
+fi
+check "check never prints the key (only a state word)" 0 \
+    "$(sed -n '/^check_site_persistence() {/,/^}/p' "$SCRIPT_UNDER_TEST" | grep -c 'print(current\|print(key)\|print(os.environ')"
+echo
+
+# T8 — anti-vacuity: the script before this check reports a site with no volume as verified.
+echo "T8: the pre-check script passes a site that is not on the volume (anti-vacuity control)"
+PRE_CHECK_REF="3ed77774843049c521f8e867a7366e06e9020a39"
+BASE8="$WORK/pre-check-verify-site.sh"
+if git -C "$SCRIPT_DIR" show "$PRE_CHECK_REF:.github/scripts/remote/verify-site.sh" > "$BASE8" 2>/dev/null; then
+    S8="$WORK/s8"; make_stubs "$S8/bin" 200
+    PERSISTENCE_STATE="match:no-volume" run_verify "$BASE8" "$S8/bin" "$S8"
+    check "pre-check script exits 0 for a site off the volume -- T6 detects the gap" 0 "$(cat "$S8/status")"
+else
+    fail "could not read $PRE_CHECK_REF:.github/scripts/remote/verify-site.sh -- the control did not run (fetch full history)"
 fi
 echo
 

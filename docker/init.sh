@@ -11,6 +11,7 @@ ADMIN_PASSWORD_VALUE="${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}"
 DEVELOPER_MODE_VALUE="${DEVELOPER_MODE:-0}"
 SITE_NAME="${SITE_NAME:-hrms.localhost}"
 EXISTING_SITE_VALUE="${EXISTING_SITE:-false}"
+: "${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set (deploy secret key FRAPPE_ENCRYPTION_KEY)}"
 
 echo "=== Installing AWS CLI ==="
 # Install aws-cli if not already installed
@@ -108,6 +109,109 @@ if [ ! -d "$BENCH_DIR" ]; then
     bench init --skip-redis-config-generation --frappe-branch "$FRAPPE_REF" frappe-bench
 fi
 cd "$BENCH_DIR"
+
+# The bench is rebuilt inside a fresh container on every deploy, so anything under
+# sites/<site> that is not on the volume is lost: uploaded files, and site_config.json with
+# the encryption_key. The volume is mounted outside the bench on purpose -- a mount inside
+# it would create $BENCH_DIR before `bench init` runs, and the guard above would skip it.
+SITE_DATA_DIR="${SITE_DATA_DIR:-/home/frappe/site-data}"
+link_site_dir() {
+    local target="$SITE_DATA_DIR/$SITE_NAME"
+    local link="$BENCH_DIR/sites/$SITE_NAME"
+
+    if [ ! -d "$SITE_DATA_DIR" ]; then
+        echo "FATAL: $SITE_DATA_DIR is missing; the frappe-site-data volume is not mounted." >&2
+        echo "Refusing to start: site files and the encryption key would be lost on the next deploy." >&2
+        exit 1
+    fi
+    sudo chown frappe:frappe "$SITE_DATA_DIR"
+    mkdir -p "$target"
+
+    if [ -L "$link" ]; then
+        if [ "$(readlink "$link")" != "$target" ]; then
+            echo "FATAL: $link points to $(readlink "$link"), expected $target." >&2
+            exit 1
+        fi
+    elif [ -e "$link" ]; then
+        if [ -n "$(ls -A "$target")" ]; then
+            echo "FATAL: both $link and $target hold site data; refusing to choose one." >&2
+            exit 1
+        fi
+        cp -a "$link/." "$target/"
+        rm -rf "$link"
+        ln -s "$target" "$link"
+    else
+        ln -s "$target" "$link"
+    fi
+    echo "Site directory: $link -> $target"
+}
+link_site_dir
+
+# Frappe encrypts stored secrets (2FA seeds, email passwords, API secrets) with the
+# encryption_key in site_config.json, and generates a random one when it is missing. A key
+# that changes makes every stored secret undecryptable, so the key comes from the deploy
+# secret and a different key already on the site is never overwritten.
+#   strict: write the key if the site has none; stop if it has a different one
+#   adopt:  also replace a different key; only for a site created during this boot
+# The key is passed through the environment, never argv, and is never printed.
+ensure_encryption_key() {
+    local mode="${1:-strict}"
+    local config="$BENCH_DIR/sites/$SITE_NAME/site_config.json"
+    local state
+
+    state="$(SITE_CONFIG="$config" python3 - <<'PY'
+import json, os, re
+key = os.environ.get("ENCRYPTION_KEY", "")
+if not re.fullmatch(r"[A-Za-z0-9_-]{43}=", key):
+    print("invalid")
+    raise SystemExit
+try:
+    with open(os.environ["SITE_CONFIG"]) as f:
+        current = json.load(f).get("encryption_key")
+except FileNotFoundError:
+    print("no-config")
+    raise SystemExit
+print("absent" if not current else "match" if current == key else "mismatch")
+PY
+)" || state="error"
+
+    case "$state:$mode" in
+        match:*)
+            echo "✓ encryption_key matches the deploy secret"
+            return 0
+            ;;
+        absent:* | mismatch:adopt)
+            ;;
+        mismatch:strict)
+            echo "FATAL: site_config.json holds a different encryption_key than FRAPPE_ENCRYPTION_KEY." >&2
+            echo "Refusing to overwrite it: data encrypted with the current key would become unreadable." >&2
+            echo "Decide which key is correct before deploying again." >&2
+            exit 1
+            ;;
+        invalid:*)
+            echo "FATAL: ENCRYPTION_KEY is not a Fernet key (44 characters, URL-safe base64)." >&2
+            exit 1
+            ;;
+        *)
+            echo "FATAL: could not read $config (state: $state)." >&2
+            exit 1
+            ;;
+    esac
+
+    SITE_CONFIG="$config" python3 - <<'PY'
+import json, os
+path = os.environ["SITE_CONFIG"]
+with open(path) as f:
+    conf = json.load(f)
+conf["encryption_key"] = os.environ["ENCRYPTION_KEY"]
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(conf, f, indent=1)
+os.chmod(tmp, os.stat(path).st_mode & 0o777)
+os.replace(tmp, path)
+PY
+    echo "✓ encryption_key written to site_config.json"
+}
 
 # Basic ownership to avoid permission surprises
 chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
@@ -270,6 +374,12 @@ if { [ -n "$DB_HOST_VALUE" ] && [ -z "$DB_NAME_VALUE" ]; } || \
     exit 1
 fi
 
+# A site already on the volume must carry the deploy key before migrate can encrypt anything.
+SITE_CREATED=false
+if [ -f "$BENCH_DIR/sites/$SITE_NAME/site_config.json" ]; then
+    ensure_encryption_key strict
+fi
+
 # For external RDS databases, try to reuse existing site/DB if present,
 # otherwise create the site once (non-destructive on subsequent runs).
 if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
@@ -304,6 +414,7 @@ if [ -n "$DB_HOST_VALUE" ] && [ -n "$DB_NAME_VALUE" ]; then
 }
 EOF
             fi
+            ensure_encryption_key strict
 
             # Ensure global config matches RDS
             bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
@@ -327,6 +438,7 @@ EOF
                 --db-root-username "$DB_USER_VALUE" \
                 --admin-password "$ADMIN_PASSWORD_VALUE" \
                 --no-mariadb-socket 2>&1; then
+                SITE_CREATED=true
                 echo "Site created successfully using bench new-site"
             else
                 echo "bench new-site failed (likely CREATE USER restriction), creating site manually..."
@@ -356,6 +468,7 @@ EOF
 }
 EOF
                 fi
+                ensure_encryption_key strict
 
                 # Set global config
                 bench set-config --global db_host "$DB_HOST_VALUE" 2>/dev/null || true
@@ -387,7 +500,15 @@ else
             --mariadb-root-username "$DB_USER_VALUE" \
             --admin-password "$ADMIN_PASSWORD_VALUE" \
             --no-mariadb-socket
+        SITE_CREATED=true
     fi
+fi
+
+# Every path above leaves a site_config.json; make sure it carries the deploy key.
+if [ "$SITE_CREATED" = true ]; then
+    ensure_encryption_key adopt
+else
+    ensure_encryption_key strict
 fi
 
 # Ensure the site knows its public URL so generated links use the correct host
