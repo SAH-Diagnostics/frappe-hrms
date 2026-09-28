@@ -112,6 +112,10 @@ for var in "${OPTIONAL_VARS[@]}"; do
     fi
 done
 
+# Hours between pushes of uploaded files to S3 (docker/create-push-cron-job.sh). Hourly unless
+# the secret says otherwise: this line was missing, so no environment ever scheduled the push.
+echo "FILES_BACK_UP_HOURS=${SECRETS_MAP[FILES_BACK_UP_HOURS]:-1}" >> "$OUTPUT_ENV_FILE"
+
 # Map DATABASE_* variables to DB_* for docker-compose compatibility
 if [ -n "${SECRETS_MAP[DATABASE_ENDPOINT]}" ]; then
     echo "DB_HOST=${SECRETS_MAP[DATABASE_ENDPOINT]}" >> "$OUTPUT_ENV_FILE"
@@ -130,7 +134,7 @@ if [ -n "${SECRETS_MAP[DATABASE_NAME]}" ]; then
 fi
 
 echo "✓ .env file generated successfully at $OUTPUT_ENV_FILE"
-TOTAL_VARS=$((${#REQUIRED_VARS[@]} + 5 + OPTIONAL_WRITTEN))  # +5 for DB_* mapped variables
+TOTAL_VARS=$((${#REQUIRED_VARS[@]} + 6 + OPTIONAL_WRITTEN))  # +5 for DB_* mapped variables, +1 FILES_BACK_UP_HOURS
 echo "Total variables written: $TOTAL_VARS"
 
 exit 0

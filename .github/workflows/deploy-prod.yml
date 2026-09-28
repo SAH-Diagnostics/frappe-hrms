@@ -151,7 +151,7 @@ jobs:
             echo "### Application Details"
             echo "- **Site URL**: https://$CERTBOT_DOMAIN"
             echo "- **Site Name**: $SITE_NAME"
-            echo "- **Backup Schedule**: Every ${FILES_BACK_UP_HOURS:-24} hours"
+            echo "- **Backup Schedule**: Every ${FILES_BACK_UP_HOURS:-1} hours"
             echo ""
             echo "### Container Status"
             echo '```'
