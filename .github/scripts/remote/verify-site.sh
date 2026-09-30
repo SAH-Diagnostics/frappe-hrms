@@ -72,24 +72,32 @@ PY
 # before `bench start`, so by the time the site answers it has finished: this cannot race it.
 # It proves the job is configured, not that a push has succeeded. FILES_BACK_UP_HOURS=off (a copy
 # of the ERP deliberately run without the push, such as the VC-653 restore test) passes with a
-# warning. Prints one state word.
+# warning.
+#
+# BUCKET_NAME is checked here too. generate-env-file.sh already refuses to deploy without it,
+# but that validates the secret on the runner; nothing checked that the value reached the
+# container. Since bucket-env.sh now fails closed, a job installed without a bucket FATALs into
+# the push log every hour and the deploy stays green -- the VC-669 shape again, one layer in.
+# Prints one state word: job:cron:bucket, or "off".
 check_files_backup() {
     local state
     state="$(sudo docker compose --env-file "$DEPLOY_DIR/.env" -f "$COMPOSE_FILE" exec -T frappe bash -s 2>/dev/null <<'SH'
 [ "$(printenv FILES_BACK_UP_HOURS)" = "off" ] && { echo off; exit 0; }
 job=missing
 cron=stopped
+bucket=unset
 grep -qE '^[0-9*/,-]+( [0-9*/,-]+){4} frappe ' "${CRON_FILE:-/etc/cron.d/frappe-files-backup}" 2>/dev/null && job=installed
 for comm in "${PROC_DIR:-/proc}"/[0-9]*/comm; do
     [ "$(cat "$comm" 2>/dev/null)" = cron ] && { cron=running; break; }
 done
-echo "$job:$cron"
+[ -n "$(printenv BUCKET_NAME)" ] && bucket=set
+echo "$job:$cron:$bucket"
 SH
 )" || state="unreachable"
 
     case "$state" in
-        installed:running)
-            echo "✓ the files backup job is installed in the container and cron is running"
+        installed:running:set)
+            echo "✓ the files backup job is installed, cron is running, and the bucket is set"
             return 0
             ;;
         off)
@@ -98,8 +106,10 @@ SH
             ;;
     esac
     echo "FATAL: files backup check failed (state: ${state:-empty})." >&2
-    echo "Expected /etc/cron.d/frappe-files-backup in the frappe container and cron running;" >&2
-    echo "without both, uploaded files are not pushed to S3. create-push-cron-job.sh logs why at boot." >&2
+    echo "Expected job:cron:bucket = installed:running:set -- the cron file" >&2
+    echo "/etc/cron.d/frappe-files-backup, a running cron, and a non-empty BUCKET_NAME in the" >&2
+    echo "container. Without all three, uploaded files are not pushed to S3." >&2
+    echo "create-push-cron-job.sh logs why at boot; bucket-env.sh refuses to guess a bucket." >&2
     return 1
 }
 

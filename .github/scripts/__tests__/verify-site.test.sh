@@ -17,9 +17,10 @@
 # must reach the file (so the test is not vacuous). FAILURE_LOG_DIR points at a temp dir.
 # Nothing here touches a server, a container or the network.
 #
-# T9-T11 (VC-669): a site that answers must also have the files backup job installed and cron
-# running, or the deploy goes red; FILES_BACK_UP_HOURS=off passes with a warning. T10 runs the
-# in-container check itself against a fake cron file and /proc.
+# T9-T12 (VC-669): a site that answers must also have the files backup job installed, cron
+# running, and a non-empty BUCKET_NAME, or the deploy goes red; FILES_BACK_UP_HOURS=off passes
+# with a warning. T10 runs the in-container check itself against a fake cron file and /proc.
+# T12 pins the snippet from before the bucket check and shows it passed a bucketless container.
 #
 # Run:  bash .github/scripts/__tests__/verify-site.test.sh
 # Exit: 0 = all pass, 1 = a failure
@@ -71,8 +72,8 @@ case " $* " in
         ;;
     *" exec "*" bash "*)
         cat > /dev/null
-        [ "${BACKUP_STATE:-installed:running}" = "unreachable" ] && exit 1
-        echo "${BACKUP_STATE:-installed:running}"
+        [ "${BACKUP_STATE:-installed:running:set}" = "unreachable" ] && exit 1
+        echo "${BACKUP_STATE:-installed:running:set}"
         exit 0
         ;;
 esac
@@ -220,11 +221,11 @@ echo
 # T9-T11 (VC-669) — the files backup job. create-push-cron-job.sh only warns when it fails, so
 #          the site comes up without it; verify-site.sh is where a deploy has to go red.
 echo "T9: a healthy site passes only with the files backup job installed and cron running"
-for state in installed:running off missing:running installed:stopped missing:stopped unreachable; do
+for state in installed:running:set off missing:running:set installed:stopped:set installed:running:unset missing:stopped:unset unreachable; do
     S9="$WORK/s9-${state//:/-}"; make_stubs "$S9/bin" 200
     BACKUP_STATE="$state" run_verify "$SCRIPT_UNDER_TEST" "$S9/bin" "$S9"
     case "$state" in
-        installed:running|off)
+        installed:running:set|off)
             check "state $state: exited 0" 0 "$(cat "$S9/status")"
             check "state $state: reported the site verified" 1 "$(grep -c 'Site verified' "$S9/stdout")"
             ;;
@@ -251,15 +252,21 @@ else
     job() { printf 'SHELL=/bin/bash\nPATH=/usr/bin:/bin\n%s frappe /home/frappe/push-to-bucket.sh >> /x.log 2>&1\n' "$1"; }
     job "0 */1 * * *" > "$T10/hourly"; job "0 0 * * *" > "$T10/daily"
     printf 'SHELL=/bin/bash\n# 0 0 * * * frappe /home/frappe/push-to-bucket.sh\n' > "$T10/commented"
-    in_container() { # $1 = cron file, $2 = proc dir, $3 = FILES_BACK_UP_HOURS
-        env -i PATH=/usr/bin:/bin CRON_FILE="$1" PROC_DIR="$2" FILES_BACK_UP_HOURS="$3" bash -s <<<"$SNIPPET"
+    in_container() { # $1 = cron file, $2 = proc dir, $3 = FILES_BACK_UP_HOURS, $4 = BUCKET_NAME
+        env -i PATH=/usr/bin:/bin CRON_FILE="$1" PROC_DIR="$2" FILES_BACK_UP_HOURS="$3" BUCKET_NAME="${4-erp-bucket}" bash -s <<<"$SNIPPET"
     }
-    check "hourly job, cron running" installed:running "$(in_container "$T10/hourly" "$T10/proc" 1)"
-    check "daily job, cron running" installed:running "$(in_container "$T10/daily" "$T10/proc" 24)"
-    check "no cron file" missing:running "$(in_container "$T10/absent" "$T10/proc" 1)"
-    check "job only in a comment" missing:running "$(in_container "$T10/commented" "$T10/proc" 1)"
-    check "job installed, cron not running" installed:stopped "$(in_container "$T10/hourly" "$T10/proc-nocron" 1)"
+    check "hourly job, cron running" installed:running:set "$(in_container "$T10/hourly" "$T10/proc" 1)"
+    check "daily job, cron running" installed:running:set "$(in_container "$T10/daily" "$T10/proc" 24)"
+    check "no cron file" missing:running:set "$(in_container "$T10/absent" "$T10/proc" 1)"
+    check "job only in a comment" missing:running:set "$(in_container "$T10/commented" "$T10/proc" 1)"
+    check "job installed, cron not running" installed:stopped:set "$(in_container "$T10/hourly" "$T10/proc-nocron" 1)"
     check "FILES_BACK_UP_HOURS=off" off "$(in_container "$T10/absent" "$T10/proc-nocron" off)"
+    check "BUCKET_NAME empty: the bucket is reported unset" installed:running:unset \
+        "$(in_container "$T10/hourly" "$T10/proc" 1 "")"
+    check "BUCKET_NAME empty and no job: both are reported" missing:running:unset \
+        "$(in_container "$T10/absent" "$T10/proc" 1 "")"
+    check "off short-circuits before the bucket is read" off \
+        "$(in_container "$T10/hourly" "$T10/proc" off "")"
 fi
 echo
 
@@ -273,6 +280,21 @@ if git -C "$SCRIPT_DIR" show "$PRE_BACKUP_REF:.github/scripts/remote/verify-site
     check "pre-check script exits 0 with no backup job -- T9 detects the gap" 0 "$(cat "$S11/status")"
 else
     fail "could not read $PRE_BACKUP_REF:.github/scripts/remote/verify-site.sh -- the control did not run (fetch full history)"
+fi
+echo
+
+# T12 — anti-vacuity: the snippet before the bucket check reports a container with no
+#       BUCKET_NAME as installed:running, a state its own case() accepts, so the deploy went
+#       green while every push FATALed into the log.
+echo "T12: the pre-bucket-check snippet passes a container with no BUCKET_NAME (anti-vacuity control)"
+PRE_BUCKET_REF="2a08c99a049449c0065d19c0fd68907ac74a15b0"
+BASE12="$WORK/pre-bucket-verify-site.sh"
+if git -C "$SCRIPT_DIR" show "$PRE_BUCKET_REF:.github/scripts/remote/verify-site.sh" > "$BASE12" 2>/dev/null; then
+    SNIPPET12="$(sed -n "/exec -T frappe bash -s 2>\/dev\/null <<'SH'\$/,/^SH\$/p" "$BASE12" | sed '1d;$d')"
+    got12="$(env -i PATH=/usr/bin:/bin CRON_FILE="$WORK/t10/hourly" PROC_DIR="$WORK/t10/proc"         FILES_BACK_UP_HOURS=1 BUCKET_NAME= bash -s <<<"$SNIPPET12")"
+    check "pre-check snippet calls a bucketless container healthy -- T10 detects the gap"         installed:running "$got12"
+else
+    fail "could not read $PRE_BUCKET_REF:.github/scripts/remote/verify-site.sh -- the control did not run (fetch full history)"
 fi
 echo
 
