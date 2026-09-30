@@ -44,6 +44,9 @@ jobs:
       - name: Site data volume and pinned encryption key (init.sh)
         run: bash docker/__tests__/init-site-persistence.test.sh
 
+      - name: Uploaded files are pushed to S3 on a schedule (create-push-cron-job.sh)
+        run: bash docker/__tests__/files-backup-cron.test.sh
+
       - name: S3 file-sync keeps keys off argv (sync-files-to-s3.sh)
         run: bash scripts/__tests__/sync-files-to-s3.test.sh
 

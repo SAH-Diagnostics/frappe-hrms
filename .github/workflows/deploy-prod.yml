@@ -151,7 +151,7 @@ jobs:
             echo "### Application Details"
             echo "- **Site URL**: https://$CERTBOT_DOMAIN"
             echo "- **Site Name**: $SITE_NAME"
-            echo "- **Backup Schedule**: Every ${FILES_BACK_UP_HOURS:-24} hours"
+            echo "- **Files backup schedule** (deploy secret; verify-site.sh checks the job is installed on the box): FILES_BACK_UP_HOURS=${FILES_BACK_UP_HOURS:-1}"
             echo ""
             echo "### Container Status"
             echo '```'
