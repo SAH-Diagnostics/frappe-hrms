@@ -17,6 +17,10 @@
 # must reach the file (so the test is not vacuous). FAILURE_LOG_DIR points at a temp dir.
 # Nothing here touches a server, a container or the network.
 #
+# T9-T11 (VC-669): a site that answers must also have the files backup job installed and cron
+# running, or the deploy goes red; FILES_BACK_UP_HOURS=off passes with a warning. T10 runs the
+# in-container check itself against a fake cron file and /proc.
+#
 # Run:  bash .github/scripts/__tests__/verify-site.test.sh
 # Exit: 0 = all pass, 1 = a failure
 
@@ -56,12 +60,19 @@ exec "$@"
 STUB
     cat > "$1/docker" <<'STUB'
 #!/usr/bin/env bash
-# The persistence check execs python3 in the container; answer with the scenario's state.
+# The persistence check execs python3 in the container and the files backup check execs bash;
+# answer each with the scenario's state.
 case " $* " in
-    *" exec "*)
+    *" exec "*" python3 "*)
         cat > /dev/null
         [ "${PERSISTENCE_STATE:-match:volume}" = "unreachable" ] && exit 1
         echo "${PERSISTENCE_STATE:-match:volume}"
+        exit 0
+        ;;
+    *" exec "*" bash "*)
+        cat > /dev/null
+        [ "${BACKUP_STATE:-installed:running}" = "unreachable" ] && exit 1
+        echo "${BACKUP_STATE:-installed:running}"
         exit 0
         ;;
 esac
@@ -202,6 +213,66 @@ if git -C "$SCRIPT_DIR" show "$PRE_CHECK_REF:.github/scripts/remote/verify-site.
     check "pre-check script exits 0 for a site off the volume -- T6 detects the gap" 0 "$(cat "$S8/status")"
 else
     fail "could not read $PRE_CHECK_REF:.github/scripts/remote/verify-site.sh -- the control did not run (fetch full history)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# T9-T11 (VC-669) — the files backup job. create-push-cron-job.sh only warns when it fails, so
+#          the site comes up without it; verify-site.sh is where a deploy has to go red.
+echo "T9: a healthy site passes only with the files backup job installed and cron running"
+for state in installed:running off missing:running installed:stopped missing:stopped unreachable; do
+    S9="$WORK/s9-${state//:/-}"; make_stubs "$S9/bin" 200
+    BACKUP_STATE="$state" run_verify "$SCRIPT_UNDER_TEST" "$S9/bin" "$S9"
+    case "$state" in
+        installed:running|off)
+            check "state $state: exited 0" 0 "$(cat "$S9/status")"
+            check "state $state: reported the site verified" 1 "$(grep -c 'Site verified' "$S9/stdout")"
+            ;;
+        *)
+            check "state $state: exited 1 (the deploy goes red)" 1 "$(cat "$S9/status")"
+            check "state $state: stderr names the files backup failure" 1 \
+                "$(grep -c 'FATAL: files backup check failed' "$S9/stderr")"
+            check "state $state: not reported as verified" 0 "$(grep -c 'Site verified' "$S9/stdout")"
+            ;;
+    esac
+done
+check "state off: warns that files are deliberately not backed up" 1 \
+    "$(grep -c 'deliberately NOT backed up' "$WORK/s9-off/stdout")"
+echo
+
+echo "T10: the in-container check reads the cron file and /proc correctly"
+SNIPPET="$(sed -n "/exec -T frappe bash -s 2>\/dev\/null <<'SH'\$/,/^SH\$/p" "$SCRIPT_UNDER_TEST" | sed '1d;$d')"
+if [ -z "$SNIPPET" ]; then
+    fail "could not extract the in-container check from $SCRIPT_UNDER_TEST"
+else
+    T10="$WORK/t10"; mkdir -p "$T10/proc/101" "$T10/proc/102" "$T10/proc-nocron/101"
+    echo bash > "$T10/proc/101/comm"; echo cron > "$T10/proc/102/comm"
+    echo bash > "$T10/proc-nocron/101/comm"
+    job() { printf 'SHELL=/bin/bash\nPATH=/usr/bin:/bin\n%s frappe /home/frappe/push-to-bucket.sh >> /x.log 2>&1\n' "$1"; }
+    job "0 */1 * * *" > "$T10/hourly"; job "0 0 * * *" > "$T10/daily"
+    printf 'SHELL=/bin/bash\n# 0 0 * * * frappe /home/frappe/push-to-bucket.sh\n' > "$T10/commented"
+    in_container() { # $1 = cron file, $2 = proc dir, $3 = FILES_BACK_UP_HOURS
+        env -i PATH=/usr/bin:/bin CRON_FILE="$1" PROC_DIR="$2" FILES_BACK_UP_HOURS="$3" bash -s <<<"$SNIPPET"
+    }
+    check "hourly job, cron running" installed:running "$(in_container "$T10/hourly" "$T10/proc" 1)"
+    check "daily job, cron running" installed:running "$(in_container "$T10/daily" "$T10/proc" 24)"
+    check "no cron file" missing:running "$(in_container "$T10/absent" "$T10/proc" 1)"
+    check "job only in a comment" missing:running "$(in_container "$T10/commented" "$T10/proc" 1)"
+    check "job installed, cron not running" installed:stopped "$(in_container "$T10/hourly" "$T10/proc-nocron" 1)"
+    check "FILES_BACK_UP_HOURS=off" off "$(in_container "$T10/absent" "$T10/proc-nocron" off)"
+fi
+echo
+
+# T11 — anti-vacuity: the script before this check reports a site with no backup job as verified.
+echo "T11: the pre-check script passes a site with no files backup job (anti-vacuity control)"
+PRE_BACKUP_REF="bec5cbaf5de278698341a5644de9b7371a9bf507"
+BASE11="$WORK/pre-backup-verify-site.sh"
+if git -C "$SCRIPT_DIR" show "$PRE_BACKUP_REF:.github/scripts/remote/verify-site.sh" > "$BASE11" 2>/dev/null; then
+    S11="$WORK/s11"; make_stubs "$S11/bin" 200
+    BACKUP_STATE="missing:stopped" run_verify "$BASE11" "$S11/bin" "$S11"
+    check "pre-check script exits 0 with no backup job -- T9 detects the gap" 0 "$(cat "$S11/status")"
+else
+    fail "could not read $PRE_BACKUP_REF:.github/scripts/remote/verify-site.sh -- the control did not run (fetch full history)"
 fi
 echo
 
