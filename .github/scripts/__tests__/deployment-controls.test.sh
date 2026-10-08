@@ -211,6 +211,24 @@ done
 echo
 
 # ---------------------------------------------------------------------------
+echo "T5b: OIDC steps that open/close SSH do not source secrets.env over the role's credentials"
+# secrets.env holds the deploy secret's own AWS key pair. Sourcing it replaces the role's
+# key id and secret but leaves AWS_SESSION_TOKEN set, so every Lightsail call fails and the
+# runner's /32 is never added or removed.
+for wf in $OIDC_WORKFLOWS harden-lightsail-host.yml; do
+    path="$WORKFLOW_DIR/$wf"
+    require_file T5b "$path" || continue
+    read -r calls bad < <(lf "$path" | awk '
+        /^[[:space:]]+- name:/ { src = 0 }
+        /source .*secrets\.env/ { src = 1 }
+        /lightsail-ssh-access\.sh (open|close)/ { calls++; if (src) bad++ }
+        END { print calls + 0, bad + 0 }')
+    check "T5b $wf: opens and closes SSH (non-vacuous)" 1 "$(( calls >= 2 ))"
+    check "T5b $wf: no SSH open/close step sources secrets.env" 0 "$bad"
+done
+echo
+
+# ---------------------------------------------------------------------------
 echo "T6: no credential-shaped literal under .github/, docker/ or scripts/"
 scan_files=()
 roots_ok=1
