@@ -54,7 +54,12 @@ jobs:
         # A failure here is shown but not fatal: "Test SSH connection" is the real check.
         continue-on-error: true
         run: |
-          source ${{ github.workspace }}/secrets.env
+          # Read only the two values the script needs. Sourcing secrets.env would replace the
+          # OIDC role's access key id and secret key with the key pair stored in the
+          # deploy secret while AWS_SESSION_TOKEN stays set, and every AWS call would then fail.
+          secrets_file="${{ github.workspace }}/secrets.env"
+          lightsail_host=$(sed -n 's/^lightsail_host=//p' "$secrets_file")
+          LIGHTSAIL_INSTANCE_NAME=$(sed -n 's/^LIGHTSAIL_INSTANCE_NAME=//p' "$secrets_file")
           .github/scripts/lightsail-ssh-access.sh open \
             "$lightsail_host" \
             "${LIGHTSAIL_INSTANCE_NAME:-}"
@@ -188,7 +193,14 @@ jobs:
           # instance name from it rather than from exported variables: VC-649 removed the
           # step that exported them, and the revoke then ran with empty values and left the
           # runner's /32 on the SSH rule.
-          if [ -f ${{ github.workspace }}/secrets.env ]; then source ${{ github.workspace }}/secrets.env; fi
+          # Read only the two values the script needs. Sourcing secrets.env would replace the
+          # OIDC role's access key id and secret key with the key pair stored in the
+          # deploy secret while AWS_SESSION_TOKEN stays set, and every AWS call would then fail.
+          secrets_file="${{ github.workspace }}/secrets.env"
+          if [ -f "$secrets_file" ]; then
+            lightsail_host=$(sed -n 's/^lightsail_host=//p' "$secrets_file")
+            LIGHTSAIL_INSTANCE_NAME=$(sed -n 's/^LIGHTSAIL_INSTANCE_NAME=//p' "$secrets_file")
+          fi
           .github/scripts/lightsail-ssh-access.sh close \
             "$lightsail_host" \
             "${LIGHTSAIL_INSTANCE_NAME:-}"
