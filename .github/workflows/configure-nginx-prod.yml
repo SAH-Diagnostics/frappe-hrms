@@ -13,8 +13,11 @@ on:
         type: boolean
         default: false
 
+# Top level rather than on the job: the controls test (T1) forbids job-level permissions, and
+# this workflow has one job, so id-token: write reaches the configure job only.
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   configure-nginx:
@@ -30,12 +33,14 @@ jobs:
       - name: Make scripts executable
         run: chmod +x .github/scripts/*.sh
 
-      - name: Setup AWS CLI
-        run: |
-          .github/scripts/setup-aws-cli.sh \
-            "${{ secrets.PROD_AWS_ACCESS_KEY_ID }}" \
-            "${{ secrets.PROD_AWS_SECRETS_ACCESS_KEY }}" \
-            "${{ secrets.AWS_SECRETS_REGION }}"
+      - name: Configure AWS credentials (OIDC)
+        # Same role as deploy-prod.yml: short-lived credentials from the job's OIDC token,
+        # trusted for this repository's `production` environment only. No static key here.
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::280648354859:role/github-actions-prod-erp-role
+          aws-region: eu-west-2
+          mask-aws-account-id: true
 
       - name: Retrieve secrets from AWS Secrets Manager
         run: |

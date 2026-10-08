@@ -66,7 +66,7 @@ CONTROLS_WORKFLOW="deployment-controls.yml"
 # Read-only scheduled check of the public endpoint (T4, T18); no environment, no secrets.
 MONITOR_WORKFLOW="erp-exposure-monitor.yml"
 # Workflows that authenticate to AWS with OIDC instead of a static key pair (T5).
-OIDC_WORKFLOWS="deploy-prod.yml"
+OIDC_WORKFLOWS="deploy-prod.yml configure-nginx-prod.yml"
 # Its own list, NOT $SAH_WORKFLOWS: it is not a deploy workflow, holds no environment and no
 # secrets, so T2/T5/T12 do not apply to it.
 SECRET_SCAN_WORKFLOW="secret-scan.yml"
