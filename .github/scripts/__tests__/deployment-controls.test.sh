@@ -25,7 +25,8 @@
 #   T3  no workflow writes to $GITHUB_ENV (the only sink where unmasked values reached a log)
 #   T4  every action is pinned to a full commit SHA with a version comment (supply chain)
 #   T5  each workflow references exactly its own environment's four repository secrets, by
-#       name only (no toJSON(secrets), secrets[...] or secrets: inherit)
+#       name only (no toJSON(secrets), secrets[...] or secrets: inherit); an OIDC workflow
+#       references only its deploy-secret id and assumes a role instead of using a key pair
 #   T6  no credential-shaped literal anywhere under .github/, docker/ or scripts/; each root
 #       must exist and contribute files, and at least 45 text files must be scanned
 #   T7  fetch-aws-secrets.sh still registers every fetched value with ::add-mask:: (both parsers)
@@ -46,6 +47,7 @@
 #   T17 (VC-644) sites/<site> lives on the frappe-site-data volume and the encryption_key is a
 #       required deploy secret; nothing removes the volume, and the first deploy with it copies
 #       the running container's files in before `compose down` (never its random key)
+#   T18 the ERP exposure monitor runs daily, is read-only, holds no secrets and fails on SSH
 #
 # REPO_ROOT can be overridden to run the same assertions against another checkout, which is
 # how red-on-base and mutation runs are produced. Nothing here touches a network or AWS.
@@ -61,6 +63,10 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 WORKFLOW_DIR="$REPO_ROOT/.github/workflows"
 SAH_WORKFLOWS="deploy-prod.yml deploy-staging.yml deploy-dev.yml configure-nginx-prod.yml configure-nginx-staging.yml configure-nginx-dev.yml"
 CONTROLS_WORKFLOW="deployment-controls.yml"
+# Read-only scheduled check of the public endpoint (T4, T18); no environment, no secrets.
+MONITOR_WORKFLOW="erp-exposure-monitor.yml"
+# Workflows that authenticate to AWS with OIDC instead of a static key pair (T5).
+OIDC_WORKFLOWS="deploy-prod.yml configure-nginx-prod.yml"
 # Its own list, NOT $SAH_WORKFLOWS: it is not a deploy workflow, holds no environment and no
 # secrets, so T2/T5/T12 do not apply to it.
 SECRET_SCAN_WORKFLOW="secret-scan.yml"
@@ -167,7 +173,7 @@ echo
 # ---------------------------------------------------------------------------
 echo "T4: every action is pinned to a full commit SHA with a version comment"
 PIN_RE='^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}[[:space:]]+#[[:space:]]*v[0-9]+(\.[0-9]+){0,2}[[:space:]]*$'
-for wf in $SAH_WORKFLOWS $CONTROLS_WORKFLOW $SECRET_SCAN_WORKFLOW; do
+for wf in $SAH_WORKFLOWS $CONTROLS_WORKFLOW $SECRET_SCAN_WORKFLOW $MONITOR_WORKFLOW; do
     path="$WORKFLOW_DIR/$wf"
     require_file T4 "$path" || continue
     total="$(lf "$path" | grep -cE '^[[:space:]]*-?[[:space:]]*uses:')"
@@ -189,7 +195,15 @@ for wf in $SAH_WORKFLOWS; do
     require_file T5 "$path" || continue
     prefix="$(expected_secret_prefix "$wf")"
     actual="$(lf "$path" | grep -oE '\$\{\{[[:space:]]*secrets\.[A-Za-z0-9_]+' | sed 's/.*secrets\.//' | sort -u | tr '\n' ' ')"
-    expected="$(printf '%s\n' AWS_SECRETS_REGION "${prefix}AWS_ACCESS_KEY_ID" "${prefix}AWS_SECRETS_ACCESS_KEY" "${prefix}AWS_DEPLOY_SECRET_ID" | sort -u | tr '\n' ' ')"
+    if [[ " $OIDC_WORKFLOWS " == *" $wf "* ]]; then
+        # OIDC: the role is assumed with the job's id-token, so no key pair and no region secret.
+        expected="$(printf '%s\n' "${prefix}AWS_DEPLOY_SECRET_ID" | sort -u | tr '\n' ' ')"
+        check "T5 $wf: assumes its role with configure-aws-credentials (non-vacuous)" 1 \
+            "$(lf "$path" | grep -cE '^[[:space:]]+role-to-assume:[[:space:]]+arn:aws:iam::[0-9]{12}:role/' | awk '{print ($1 >= 1)}')"
+        check "T5 $wf: no longer calls setup-aws-cli.sh" 0 "$(lf "$path" | grep -c 'setup-aws-cli\.sh')"
+    else
+        expected="$(printf '%s\n' AWS_SECRETS_REGION "${prefix}AWS_ACCESS_KEY_ID" "${prefix}AWS_SECRETS_ACCESS_KEY" "${prefix}AWS_DEPLOY_SECRET_ID" | sort -u | tr '\n' ' ')"
+    fi
     check "T5 $wf: secrets referenced == {${expected% }}" "$expected" "$actual"
     bulk="$(lf "$path" | grep -cE 'toJSON\(secrets\)|secrets\[|secrets:[[:space:]]*inherit')"
     check "T5 $wf: no bulk or indirect secrets access" 0 "$bulk"
@@ -543,7 +557,7 @@ if require_file T16 "$path"; then
             { line = $0 }
             line ~ /\{/ { n++; stack[++sp] = n }
             line ~ /add_header/ { has[stack[sp]] = 1
-                if (line ~ /Strict-Transport-Security "max-age=[0-9]+" always;/) h[stack[sp], 1] = 1
+                if (line ~ /Strict-Transport-Security "max-age=[0-9]+(; includeSubDomains)?" always;/) h[stack[sp], 1] = 1
                 if (line ~ /X-Content-Type-Options "nosniff" always;/) h[stack[sp], 2] = 1
                 if (line ~ /X-Frame-Options "(SAMEORIGIN|DENY)" always;/) h[stack[sp], 3] = 1
                 if (line ~ /Referrer-Policy "[a-z-]+" always;/) h[stack[sp], 4] = 1 }
@@ -552,6 +566,13 @@ if require_file T16 "$path"; then
                 for (b in has) { blocks++; for (i = 1; i <= 4; i++) if (!h[b, i]) bad++ }
                 print blocks ":" bad }' "$conf")"
         check "T16 vhost: both header blocks (server, /assets) carry all four security headers" "2:0" "$missing"
+        # Parity with Virtual Clinics: two-year HSTS on subdomains, never preload (a browser
+        # list entry for the whole registrable domain, slow to undo).
+        check "T16 vhost: HSTS is max-age=63072000; includeSubDomains in both header blocks" 2 \
+            "$(grep -cF 'add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;' "$conf")"
+        check "T16 vhost: HSTS never asks for preload" 0 "$(grep -ci 'preload' "$conf")"
+        check "T16 vhost: server_tokens off in both server blocks" 2 \
+            "$(grep -cE '^[[:space:]]*server_tokens[[:space:]]+off;' "$conf")"
     else
         fail "T16 render-nginx-conf.sh: produced no file"
     fi
@@ -572,6 +593,21 @@ for env in prod staging dev; do
         END { print ((c && n && c < n) ? "cert-first" : "wrong:" c "," n) }')"
     check "T16 configure-nginx-$env.yml: the certificate is ensured before the vhost is installed" cert-first "$order"
 done
+# Production only: a run against a host that already holds a certificate replaces the live
+# vhost, so it must be an explicit forced dispatch (fails closed on push and on a plain dispatch).
+path="$WORKFLOW_DIR/configure-nginx-prod.yml"
+if require_file T16 "$path"; then
+    order="$(lf "$path" | awk '
+        /- name: Refuse to touch a host that already has a certificate/ && !g { g = NR }
+        /- name: Setup SSL certificate/ && !c { c = NR }
+        END { print ((g && c && g < c) ? "guard-first" : "wrong:" g "," c) }')"
+    check "T16 configure-nginx-prod.yml: the existing-certificate guard runs before certbot and nginx" guard-first "$order"
+    # shellcheck disable=SC2016
+    check "T16 configure-nginx-prod.yml: the guard tests live/<domain>/fullchain.pem" 1 \
+        "$(lf "$path" | grep -cF 'sudo test -e /etc/letsencrypt/live/$CERTBOT_DOMAIN/fullchain.pem')"
+    check "T16 configure-nginx-prod.yml: force defaults to false" 1 \
+        "$(lf "$path" | awk '/^      force:/ { f = 1 } f && /^        default: false[[:space:]]*$/ { n++; f = 0 } END { print n + 0 }')"
+fi
 path="$REPO_ROOT/.github/scripts/setup-certbot.sh"
 if require_file T16 "$path"; then
     check "T16 setup-certbot.sh: never lets certbot rewrite the vhost (no 'certbot --nginx')" 0 \
@@ -687,6 +723,23 @@ STUB
         | T17_LOG="$t17_dir/heredoc.log" PATH="$t17_dir/bin:$PATH" bash -s 2>&1)"
     check "T17 seed: leaves the caller's stdin (the deploy heredoc) unread" 1 "$(grep -c '^AFTER-SEED$' <<< "$heredoc_out")"
     rm -rf "$t17_dir"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+echo "T18: the ERP exposure monitor is scheduled, read-only and holds no credentials"
+path="$WORKFLOW_DIR/$MONITOR_WORKFLOW"
+if require_file T18 "$path"; then
+    check "T18 $MONITOR_WORKFLOW: runs on a daily schedule" 1 "$(lf "$path" | grep -cE "^[[:space:]]+- cron: '[0-9]+ [0-9]+ \* \* \*'")"
+    check "T18 $MONITOR_WORKFLOW: can be dispatched by hand" 1 "$(lf "$path" | grep -cE '^  workflow_dispatch:')"
+    block="$(lf "$path" | awk '/^permissions:/ { b = 1; next } b && /^[^[:space:]]/ { b = 0 } b' | grep -vE '^[[:space:]]*(#|$)')"
+    check "T18 $MONITOR_WORKFLOW: permissions are exactly contents: read" "  contents: read" "$block"
+    check "T18 $MONITOR_WORKFLOW: no job- or step-level permissions" 0 "$(lf "$path" | grep -cE '^[[:space:]]+permissions:')"
+    check "T18 $MONITOR_WORKFLOW: references no secrets" 0 "$(lf "$path" | grep -c 'secrets\.')"
+    check "T18 $MONITOR_WORKFLOW: binds no environment" 0 "$(lf "$path" | grep -cE '^[[:space:]]+environment:')"
+    check "T18 $MONITOR_WORKFLOW: no AWS credentials action" 0 "$(lf "$path" | grep -c 'configure-aws-credentials')"
+    check "T18 $MONITOR_WORKFLOW: runs check-public-tls.sh" 1 "$(lf "$path" | grep -c 'bash \.github/scripts/check-public-tls\.sh')"
+    check "T18 $MONITOR_WORKFLOW: SSH is not tolerated as a warning" 0 "$(lf "$path" | grep -cE '^[[:space:]]+22\)')"
 fi
 echo
 

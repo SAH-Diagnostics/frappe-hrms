@@ -7,9 +7,17 @@ on:
     paths:
       - 'nginx/**'
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Run although production already has a certificate (replaces the live vhost; read docs before ticking)"
+        type: boolean
+        default: false
 
+# Top level rather than on the job: the controls test (T1) forbids job-level permissions, and
+# this workflow has one job, so id-token: write reaches the configure job only.
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   configure-nginx:
@@ -25,12 +33,14 @@ jobs:
       - name: Make scripts executable
         run: chmod +x .github/scripts/*.sh
 
-      - name: Setup AWS CLI
-        run: |
-          .github/scripts/setup-aws-cli.sh \
-            "${{ secrets.PROD_AWS_ACCESS_KEY_ID }}" \
-            "${{ secrets.PROD_AWS_SECRETS_ACCESS_KEY }}" \
-            "${{ secrets.AWS_SECRETS_REGION }}"
+      - name: Configure AWS credentials (OIDC)
+        # Same role as deploy-prod.yml: short-lived credentials from the job's OIDC token,
+        # trusted for this repository's `production` environment only. No static key here.
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::280648354859:role/github-actions-prod-erp-role
+          aws-region: eu-west-2
+          mask-aws-account-id: true
 
       - name: Retrieve secrets from AWS Secrets Manager
         run: |
@@ -65,6 +75,32 @@ jobs:
             "$lightsail_user" \
             "$lightsail_host" \
             "${lightsail_port:-22}"
+
+      - name: Refuse to touch a host that already has a certificate unless forced
+        # Fail closed: this workflow replaces the live vhost. On a host that already serves
+        # TLS, that must be a deliberate, reviewed run (dispatch with force), never a side
+        # effect of a push to nginx/** or an unticked dispatch.
+        env:
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          source ${{ github.workspace }}/secrets.env
+          if ssh -i ~/.ssh/lightsail_key -p "${lightsail_port:-22}" -o StrictHostKeyChecking=accept-new \
+              "$lightsail_user@$lightsail_host" \
+              "sudo test -e /etc/letsencrypt/live/$CERTBOT_DOMAIN/fullchain.pem"; then
+            if [ "$FORCE" = "true" ]; then
+              echo "::warning::A certificate already exists for this domain; continuing because force is set"
+            else
+              echo "::error::A certificate already exists for this domain. Re-run with force only after reviewing the rendered vhost."
+              exit 1
+            fi
+          else
+            rc=$?
+            if [ "$rc" -ne 1 ]; then
+              echo "::error::Could not check for an existing certificate (ssh exit $rc); refusing to continue"
+              exit 1
+            fi
+            echo "No certificate on the host yet; continuing"
+          fi
 
       - name: Generate Nginx configuration
         run: |
