@@ -75,10 +75,12 @@ The `environment:` key on each job (all six workflows, job level) is what connec
 | Name | Purpose | Readable by (today) | Target scope |
 |------|---------|---------------------|--------------|
 | `AWS_SECRETS_REGION` | Region for the Secrets Manager call | Any workflow on any branch | May stay repository-level (not sensitive) |
-| `PROD_AWS_ACCESS_KEY_ID`, `PROD_AWS_SECRETS_ACCESS_KEY` | Static IAM user key pair that reads the prod secret | Any workflow on any branch | `production` environment |
+| ~~`PROD_AWS_ACCESS_KEY_ID`, `PROD_AWS_SECRETS_ACCESS_KEY`~~ | Static IAM user key pair that read the prod secret | Deleted (VC-695): production deploys assume an OIDC role (section 8) | None |
 | `PROD_AWS_DEPLOY_SECRET_ID` | Name or ARN of the prod Secrets Manager secret | Any workflow on any branch | `production` environment |
 | `STAGING_AWS_ACCESS_KEY_ID`, `STAGING_AWS_SECRETS_ACCESS_KEY`, `STAGING_AWS_DEPLOY_SECRET_ID` | As above, staging | Any workflow on any branch | `staging` environment |
 | `DEV_AWS_ACCESS_KEY_ID`, `DEV_AWS_SECRETS_ACCESS_KEY`, `DEV_AWS_DEPLOY_SECRET_ID` | As above, dev | Any workflow on any branch | `development` environment |
+
+Production holds one secret, `PROD_AWS_DEPLOY_SECRET_ID` (a name, not a credential), as a `production` environment secret; the production workflows obtain AWS credentials from GitHub OIDC (section 8) and the controls tests assert that they reference no static key pair. Staging and development still use their key pairs.
 
 No repository variables exist. Each workflow references exactly its own environment's three secrets plus `AWS_SECRETS_REGION`; the controls test T5 asserts this set per file.
 
@@ -96,7 +98,7 @@ Secret names are not recorded here. The staging name is the module default in `t
 | `encryption_key` | UNVERIFIED (not in terraform; written out-of-band) | No consumer in this repository: nothing copies it to the box or into `site_config.json`. Origin and any out-of-band consumer are UNVERIFIED; runbook step 0b settles whether the leaked value is live. |
 | `FRAPPE_ENCRYPTION_KEY` | Added by hand to each environment's deploy secret (VC-644) | Required by `generate-env-file.sh` and compose; `docker/init.sh` writes it into `site_config.json` and refuses to boot when the site holds a different key; `verify-site.sh` fails a deploy whose site key does not match. Never printed. Losing it makes every stored secret unreadable. |
 
-Readers of the Secrets Manager secret: the three static IAM users whose keys sit in GitHub secrets, plus any AWS principal with `secretsmanager:GetSecretValue` on the ARN. The IAM policy attached to those users was not reviewed here and is UNVERIFIED.
+Readers of the Secrets Manager secret: for production, the OIDC deploy role, which only a workflow job running in the `production` environment can assume; for staging and development, the static IAM user whose keys sit in GitHub secrets; plus any AWS principal with `secretsmanager:GetSecretValue` on the ARN. The IAM policy attached to those users was not reviewed here and is UNVERIFIED.
 
 ### 4.3 On-box environment file
 
@@ -209,6 +211,8 @@ for n in PROD_AWS_ACCESS_KEY_ID PROD_AWS_SECRETS_ACCESS_KEY PROD_AWS_DEPLOY_SECR
 done
 # same for STAGING_* -> staging, DEV_* -> development
 ```
+
+Production update (VC-695): after production moved to OIDC, `PROD_AWS_ACCESS_KEY_ID` and `PROD_AWS_SECRETS_ACCESS_KEY` were deleted; production now holds only `PROD_AWS_DEPLOY_SECRET_ID`. Do not re-create the prod key pair.
 
 Prove one deploy per environment succeeds (a `workflow_dispatch` on the matching branch), then delete the repository-level copies:
 
@@ -391,7 +395,8 @@ Already part of the rulesets in step 4. If step 4 was done before this PR's firs
 | `SAH-Admin` | Classification pending (human or break-glass) | Never a routine approver |
 | Write collaborators | Open PRs; cannot approve their own PR; cannot push to `main` or `staging` after step 4 | |
 | `GITHUB_TOKEN` | Read-only (`contents: read`) in every SAH workflow | Cannot write to the repository or approve PRs |
-| Static IAM deploy users (one per environment) | Read one Secrets Manager secret | Pending replacement by OIDC (section 8) |
+| Production OIDC deploy role | Read the prod Secrets Manager secret; open and close the runner's /32 on the instance SSH rule during a deploy | Assumable only by a job in the `production` environment of this repository (section 8) |
+| Static IAM deploy user (staging, development) | Read one Secrets Manager secret | Pending replacement by OIDC (section 8) |
 | Lightsail `ubuntu` SSH identity | Target of the deploy | Key to be rotated in step 0a (owed) |
 
 Emergency path when a required reviewer is absent: an admin temporarily edits the `production` reviewer list (adds themselves or another admin), approves, then restores the list. Every edit is recorded in the organisation audit log (`environment.update_protection_rule`). The change and its reason are noted in the next quarterly review (section 10). There is no bypass on the rulesets; the emergency path is the reviewer list only.
@@ -410,6 +415,8 @@ Emergency path when a required reviewer is absent: an admin temporarily edits th
 ## 8 Target state: OIDC
 
 Recorded here so that the follow-up ticket implements exactly this and nothing else.
+
+Status: **production done (VC-695).** The prod role exists and is managed in terraform in the infrastructure repository; `deploy-prod.yml`, `configure-nginx-prod.yml` and `harden-lightsail-host.yml` request `id-token: write` and assume it; the prod static key pair secrets are deleted. The instance SSH port accepts only the Lightsail browser console range; each workflow adds the runner's own /32 before it connects and removes it in an `always()` step. Staging and development remain on static keys (follow-up).
 
 OIDC provider `token.actions.githubusercontent.com`, one role per environment, trust `aud = sts.amazonaws.com`, `sub = repo:SAH-Diagnostics/frappe-hrms:environment:<production|staging|development>`, `secretsmanager:GetSecretValue` on one ARN, `permissions: id-token: write`, delete six static-key secrets; OIDC does not remove the bucket key on the box (Lightsail has no instance roles).
 
@@ -437,7 +444,7 @@ Run as a repository admin. Paste the outputs into the ticket for that quarter's 
 | Branch policies | `for e in production staging development; do gh api "repos/$r/environments/$e/deployment-branch-policies" --jq '.branch_policies[].name'; done` | `main`, `staging`, `develop` respectively, one each |
 | Rulesets active | `gh api "repos/$r/rulesets" --jq '.[] \| [.name, .enforcement, .source_type] \| @tsv'` and `gh api "orgs/SAH-Diagnostics/rulesets" --jq '.[] \| [.name, .enforcement] \| @tsv'` | `main`, `staging`, tag rulesets all `active`; bypass lists empty except the tag ruleset |
 | Repository secrets | `gh api "repos/$r/actions/secrets" --jq '.secrets[].name'` | Only `AWS_SECRETS_REGION` |
-| Environment secrets | `for e in production staging development; do gh api "repos/$r/environments/$e/secrets" --jq '.secrets[].name'; done` | Exactly three per environment with the matching prefix |
+| Environment secrets | `for e in production staging development; do gh api "repos/$r/environments/$e/secrets" --jq '.secrets[].name'; done` `production`: only `PROD_AWS_DEPLOY_SECRET_ID`; `staging` and `development`: three each with the matching prefix |
 | Collaborators | `gh api "repos/$r/collaborators?affiliation=all" --jq '.[] \| [.login, .role_name] \| @tsv'` | Matches the current staff list; admins are `mohammad-dasseh`, `alitamoor-dev`, plus `SAH-Admin` per its classification |
 | Actions policy | `gh api "repos/$r/actions/permissions"; gh api "repos/$r/actions/permissions/selected-actions"; gh api "repos/$r/actions/permissions/workflow"` | `selected`; GitHub-owned + verified + `pre-commit/action@*`; `read`, `can_approve_pull_request_reviews: false` |
 | Latest production deploys | `gh api "repos/$r/actions/workflows/deploy-prod.yml/runs?per_page=10" --jq '.workflow_runs[] \| [.id, .event, .head_branch, .actor.login, .conclusion, .created_at] \| @tsv'` | Every run on `main`, actor is a current collaborator, each has an approval in its deployment review |
@@ -452,7 +459,7 @@ Run as a repository admin. Paste the outputs into the ticket for that quarter's 
 
 Each is outside this PR. Raise one ticket per line unless already covered.
 
-- OIDC for the three deploy identities per section 8 (infrastructure repository).
+- OIDC for the staging and development deploy identities per section 8 (production done in VC-695), then retire the shared static IAM user and its key.
 - Rotation, `encryption_key` check and run deletion per runbook steps 0 to 3 (shared environment; user decision).
 - All repository and organisation settings per runbook steps 1 to 10 (admin).
 - `docker/` insecure defaults: PR #4 (VC-646), targets `main`; expect a small `REQUIRED_VARS` conflict with this PR at promotion, resolve by keeping both changes.
@@ -465,7 +472,7 @@ Each is outside this PR. Raise one ticket per line unless already covered.
 - Decide whether CODEOWNERS should also cover `*` (application code that runs in production) or whether the one-approval ruleset is enough for `hrms/`.
 - Host key trust: replace `ssh-keyscan` plus `accept-new` with pinned host keys in the secret.
 - ~~`chmod 600` on `/home/ubuntu/.env` at copy time, or write it under `/opt/app` only.~~ Done in VC-657 (see row 22).
-- Confirm the IAM policy on each static deploy user is limited to `secretsmanager:GetSecretValue` on its one ARN.
+- Confirm the IAM policy on each remaining static deploy user (staging, development) is limited to `secretsmanager:GetSecretValue` on its one ARN.
 - Apply the same review to `SAH-Diagnostics/sah_crm`.
 
 ## 12 Verification notes
