@@ -58,3 +58,7 @@ jobs:
 
       - name: Public endpoint checks used by the exposure monitor (check-public-tls.sh)
         run: bash .github/scripts/__tests__/check-public-tls.test.sh
+
+      - name: Host hardening renderers and parsers (docker/host/harden-host.sh)
+        # Unit layer only; the ubuntu:22.04 container layer (--container) is run by hand.
+        run: bash docker/__tests__/harden-host.test.sh

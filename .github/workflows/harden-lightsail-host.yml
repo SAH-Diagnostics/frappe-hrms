@@ -1,0 +1,221 @@
+# Harden the production ERP Lightsail host (Ubuntu 22.04), or only verify it.
+#
+# Host-level controls that app deploys do not touch, applied by docker/host/harden-host.sh:
+#   - sshd drop-in: no root, no passwords, no keyboard-interactive, AllowGroups sudo
+#     (keeps `ubuntu` for CI/browser SSH and the user_data named admins working)
+#   - nftables table inet sah_host_fw, input policy drop (stacks with the deploy's ufw)
+#   - unattended-upgrades, security origins only, no automatic reboot
+# See docker/host/README.md for the runbook.
+#
+# mode=verify  read-only: the evidence report, plus the plan an apply would carry out.
+#              The job fails when the host has drifted (exit 2) or patching is not running
+#              (exit 3).
+# mode=apply   1. the script arms a 5-minute dead-man rollback BEFORE changing anything
+#              2. a NEW ssh connection must log in as the deploy user and pass
+#                 `--verify --expect-armed`, and sshd (not a firewall timeout) must refuse a
+#                 login outside AllowGroups
+#              3. only then a separate invocation runs --disarm (enables the boot unit and
+#                 stops the timer). If step 2 never happens the timer undoes the sshd and
+#                 firewall changes. Do it in a maintenance window.
+#
+# Dispatch only, from main, never on push. Do not merge to main while an apply runs: the
+# deploy rewrites the same Lightsail SSH rule (read-modify-write) and can drop this run's
+# /32, which fails step 2 and lets the rollback fire (safe, but the apply is lost).
+#
+# This repository is public, so its Actions logs are too: the host address and every
+# secret are masked by fetch-aws-secrets.sh / lightsail-ssh-access.sh, and harden-host.sh
+# prints no addresses and no usernames.
+name: Harden Lightsail host (prod ERP)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'verify (read-only) or apply (maintenance window)'
+        required: true
+        default: 'verify'
+        type: choice
+        options: [verify, apply]
+
+# id-token: write lets the job assume the OIDC deploy role (single job, so top level is fine).
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: erp-prod-host-harden
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    name: Harden production ERP host (${{ inputs.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      MODE: ${{ inputs.mode }}
+    steps:
+      - name: Check the dispatch ref
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Production can only be hardened from main (the reviewed code). Re-run this workflow from 'main'."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Make scripts executable
+        run: chmod +x .github/scripts/*.sh
+
+      # Same identity as deploy-prod.yml and configure-nginx-prod.yml: the OIDC role
+      # github-actions-prod-erp-role, trusted for the `production` environment only. No static
+      # key, so the PROD_AWS_* key pair can be retired. Dispatch only after the role exists.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::280648354859:role/github-actions-prod-erp-role
+          aws-region: eu-west-2
+          mask-aws-account-id: true
+
+      - name: Retrieve secrets from AWS Secrets Manager
+        run: |
+          .github/scripts/fetch-aws-secrets.sh \
+            "${{ secrets.PROD_AWS_DEPLOY_SECRET_ID }}" \
+            "${{ github.workspace }}/secrets.env"
+
+      - name: Allow this runner to reach SSH
+        # Not fatal, exactly as in deploy-prod.yml: "Test SSH connection" decides.
+        continue-on-error: true
+        run: |
+          source "${{ github.workspace }}/secrets.env"
+          .github/scripts/lightsail-ssh-access.sh open \
+            "$lightsail_host" \
+            "${LIGHTSAIL_INSTANCE_NAME:-}"
+
+      - name: Setup SSH connection
+        run: |
+          source "${{ github.workspace }}/secrets.env"
+          .github/scripts/setup-ssh.sh \
+            "$lightsail_private_key_b64" \
+            "$lightsail_host" \
+            "$lightsail_user" \
+            "${lightsail_port:-22}"
+
+      - name: Test SSH connection
+        run: |
+          source "${{ github.workspace }}/secrets.env"
+          .github/scripts/test-ssh-connection.sh \
+            "$lightsail_user" \
+            "$lightsail_host" \
+            "${lightsail_port:-22}"
+
+      - name: Copy the hardening script
+        run: |
+          source "${{ github.workspace }}/secrets.env"
+          SSH_OPTS=(-i ~/.ssh/lightsail_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
+          ssh "${SSH_OPTS[@]}" -p "${lightsail_port:-22}" "$lightsail_user@$lightsail_host" \
+            "rm -rf ~/sah-harden && mkdir -p ~/sah-harden" </dev/null
+          scp "${SSH_OPTS[@]}" -P "${lightsail_port:-22}" docker/host/harden-host.sh \
+            "$lightsail_user@$lightsail_host:sah-harden/harden-host.sh"
+
+      - name: Verify (before) and plan
+        # In apply mode drift is the expected starting point, so it does not stop the job.
+        continue-on-error: ${{ inputs.mode == 'apply' }}
+        run: |
+          source "${{ github.workspace }}/secrets.env"
+          set -o pipefail
+          ssh -i ~/.ssh/lightsail_key -p "${lightsail_port:-22}" -o StrictHostKeyChecking=accept-new \
+            "$lightsail_user@$lightsail_host" \
+            "sudo bash ~/sah-harden/harden-host.sh --apply --dry-run; sudo bash ~/sah-harden/harden-host.sh --verify" \
+            </dev/null | tee evidence-before.txt
+
+      - name: Apply (dead-man armed first)
+        if: inputs.mode == 'apply'
+        run: |
+          source "${{ github.workspace }}/secrets.env"
+          set -o pipefail
+          ssh -i ~/.ssh/lightsail_key -p "${lightsail_port:-22}" -o StrictHostKeyChecking=accept-new \
+            "$lightsail_user@$lightsail_host" \
+            "sudo bash ~/sah-harden/harden-host.sh --apply" </dev/null | tee apply.txt
+
+      # Every ssh here is a new TCP connection (no ControlMaster), against the reloaded sshd
+      # and the live nft table. If any check fails the job stops BEFORE disarm and the
+      # dead-man undoes the change within 5 minutes.
+      - name: Confirm access with a fresh connection
+        if: inputs.mode == 'apply'
+        run: |
+          source "${{ github.workspace }}/secrets.env"
+          set -o pipefail
+          FRESH=(-i ~/.ssh/lightsail_key -p "${lightsail_port:-22}" -o StrictHostKeyChecking=accept-new
+                 -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=15)
+
+          if ! ssh "${FRESH[@]}" "$lightsail_user@$lightsail_host" \
+              "sudo bash ~/sah-harden/harden-host.sh --verify --expect-armed" </dev/null | tee evidence-armed.txt; then
+            echo "::error::Fresh login or armed verify failed after apply. Not disarming; the dead-man rollback will undo the sshd and firewall changes within 5 minutes."
+            exit 1
+          fi
+
+          # 'nobody' has no key and is outside AllowGroups: sshd must answer with an
+          # authentication refusal. A timeout would mean the firewall, not sshd, answered.
+          set +e
+          OUT=$(ssh "${FRESH[@]}" -o BatchMode=yes -o PreferredAuthentications=publickey \
+            "nobody@$lightsail_host" true </dev/null 2>&1)
+          RC=$?
+          set -e
+          if [ $RC -eq 0 ]; then
+            echo "::error::User 'nobody' could log in. Not disarming."
+            exit 1
+          fi
+          if ! grep -q 'Permission denied' <<<"$OUT"; then
+            echo "::error::Expected sshd to refuse 'nobody' with 'Permission denied'; got something else (exit $RC). Not disarming."
+            exit 1
+          fi
+          echo "Fresh login ok; sshd answers and refuses an unauthorised login."
+
+      - name: Disarm (persist the firewall unit, stop the dead-man)
+        if: inputs.mode == 'apply'
+        run: |
+          source "${{ github.workspace }}/secrets.env"
+          ssh -i ~/.ssh/lightsail_key -p "${lightsail_port:-22}" -o StrictHostKeyChecking=accept-new \
+            -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=15 \
+            "$lightsail_user@$lightsail_host" \
+            "sudo bash ~/sah-harden/harden-host.sh --disarm" </dev/null
+
+      - name: Verify (after)
+        if: inputs.mode == 'apply'
+        run: |
+          source "${{ github.workspace }}/secrets.env"
+          set -o pipefail
+          ssh -i ~/.ssh/lightsail_key -p "${lightsail_port:-22}" -o StrictHostKeyChecking=accept-new \
+            "$lightsail_user@$lightsail_host" \
+            "sudo bash ~/sah-harden/harden-host.sh --verify" </dev/null | tee evidence-after.txt
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: erp-prod-hardening-evidence-${{ github.run_id }}
+          path: |
+            evidence-before.txt
+            apply.txt
+            evidence-armed.txt
+            evidence-after.txt
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Revoke this runner's SSH access
+        # Not continue-on-error: a runner address left on the SSH rule must turn the run red.
+        if: always() && env.VC647_RUNNER_CIDR != ''
+        run: |
+          if [ -f "${{ github.workspace }}/secrets.env" ]; then source "${{ github.workspace }}/secrets.env"; fi
+          .github/scripts/lightsail-ssh-access.sh close \
+            "$lightsail_host" \
+            "${LIGHTSAIL_INSTANCE_NAME:-}"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f "${{ github.workspace }}/secrets.env" ~/.ssh/lightsail_key
