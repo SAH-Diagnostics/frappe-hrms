@@ -114,6 +114,24 @@ web 0.0.0.0:8080->80/tcp, :::8080->80/tcp'
 Inst tzdata [2024a-0ubuntu0.22.04] (2025b-0ubuntu0.22.04 Ubuntu:22.04/jammy-updates [all])
 Conf libssl3 (3.0.2-0ubuntu1.18 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [amd64])'
   check "pending_security_pkgs counts only -security Inst lines" [ "$(pending_security_pkgs <<<"$sim")" = "libssl3" ]
+  # Public repo: by default the summary carries a count, never package names.
+  local quiet loud
+  quiet=$(summarise_pending "$(printf 'libssl3\nopenssh-server')")
+  loud=$(HARDEN_VERBOSE=1 summarise_pending "$(printf 'libssl3\nopenssh-server')")
+  check "pending summary reports the count" grep -q '2 security update(s) pending' <<<"$quiet"
+  check "pending summary names no package by default" bash -c '! grep -q "libssl3\|openssh" <<<"$1"' _ "$quiet"
+  check "HARDEN_VERBOSE=1 adds the package names" grep -q 'libssl3 openssh-server' <<<"$loud"
+  check "no pending updates reads 'none'" [ "$(summarise_pending '')" = "pending security updates: none" ]
+  check "verify prints the kernel only through detail()" bash -c '! grep -nE "^[[:space:]]*echo .*uname -r" "$1"' _ "$HARDEN"
+
+  # The dispatch workflow: same supply-chain and credential rules as the deploy workflows.
+  local wf="$SCRIPT_DIR/../../.github/workflows/harden-lightsail-host.yml"
+  local uses pinned
+  uses=$(grep -cE '^[[:space:]]*-?[[:space:]]*uses:' "$wf")
+  pinned=$(grep -cE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}[[:space:]]+#[[:space:]]*v[0-9]' "$wf")
+  check "workflow: every action pinned to a commit SHA ($pinned/$uses)" bash -c '[ "$1" -ge 1 ] && [ "$1" = "$2" ]' _ "$uses" "$pinned"
+  check "workflow: assumes the OIDC role" grep -qE '^[[:space:]]+role-to-assume:[[:space:]]+arn:aws:iam::[0-9]{12}:role/github-actions-prod-erp-role$' "$wf"
+  check "workflow: no static AWS key pair" bash -c '! grep -qE "AWS_ACCESS_KEY_ID|AWS_SECRETS_ACCESS_KEY|setup-aws-cli" "$1"' _ "$wf"
 
   # access_problems with a stubbed id/group database.
   local tmp

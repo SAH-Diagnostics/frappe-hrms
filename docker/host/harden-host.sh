@@ -271,6 +271,27 @@ pending_security_pkgs() {
   awk '/^Inst / && /-security/ { print $2 }'
 }
 
+# The repository is public, so verify output (workflow logs and the evidence artifact) is
+# public too. By default it reports patch state as counts only - no kernel version, no
+# package names - so it does not publish what is unpatched. HARDEN_VERBOSE=1 adds the
+# detail for someone running the script on the host itself.
+detail() {
+  [ "${HARDEN_VERBOSE:-0}" = "1" ] || return 0
+  echo "$*"
+}
+
+# summarise_pending <newline-separated packages>: one line, count only unless verbose.
+summarise_pending() {
+  local n
+  if [ -z "$1" ]; then
+    echo "pending security updates: none"
+    return 0
+  fi
+  n=$(printf '%s\n' "$1" | wc -l | tr -d ' ')
+  warn "$n security update(s) pending (held, phased or needing a dist-upgrade)"
+  detail "  packages: $(printf '%s' "$1" | tr '\n' ' ')"
+}
+
 # Reads `docker ps --format "{{.Names}} {{.Ports}}"` on stdin; prints published mappings
 # that are not bound to loopback.
 non_loopback_ports() {
@@ -483,7 +504,7 @@ cmd_verify() {
   local out missing problems n age fw_state pending u nadmins=0
   section "Host"
   grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release 2>/dev/null || true
-  echo "kernel: $(uname -r)"
+  detail "kernel: $(uname -r)"
   echo "uptime: $(uptime -p 2>/dev/null || uptime)"
 
   section "SSH"
@@ -586,17 +607,17 @@ cmd_verify() {
       warn "$APT_PERIODIC_DIR/$u missing (unattended-upgrades has never run)"
     fi
   done
-  echo "--- last unattended-upgrades log lines"
-  tail -n 15 /var/log/unattended-upgrades/unattended-upgrades.log 2>/dev/null || echo "<none>"
+  # Last run time only; the log itself names upgraded packages (see detail()).
+  echo "last unattended-upgrades log entry: $(tail -n 1 /var/log/unattended-upgrades/unattended-upgrades.log 2>/dev/null | cut -c1-19)"
+  if [ "${HARDEN_VERBOSE:-0}" = "1" ]; then
+    tail -n 15 /var/log/unattended-upgrades/unattended-upgrades.log 2>/dev/null || true
+  fi
   # Read-only: the simulation uses the cached package lists, it does not refresh them.
   pending=$(apt-get -s -o Debug::NoLocking=1 dist-upgrade 2>/dev/null | pending_security_pkgs || true)
-  if [ -n "$pending" ]; then
-    warn "$(echo "$pending" | wc -l | tr -d ' ') security update(s) pending (held, phased or needing a dist-upgrade): $(echo "$pending" | tr '\n' ' ')"
-  else
-    echo "pending security updates: none"
-  fi
+  summarise_pending "$pending"
   if [ -e "$REBOOT_REQUIRED_FILE" ]; then
-    warn "reboot required (kernel/core libraries updated) - schedule it manually: $(tr '\n' ' ' <"$REBOOT_REQUIRED_FILE.pkgs" 2>/dev/null)"
+    warn "reboot required (kernel/core libraries updated) - schedule it manually"
+    detail "  packages: $(tr '\n' ' ' <"$REBOOT_REQUIRED_FILE.pkgs" 2>/dev/null)"
   else
     echo "reboot required: no"
   fi

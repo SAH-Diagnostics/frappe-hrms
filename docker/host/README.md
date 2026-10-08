@@ -20,7 +20,7 @@ Actions → **Harden Lightsail host (prod ERP)** → Run workflow from `main` �
 
 The log and the `erp-prod-hardening-evidence-<run>` artifact contain two things:
 - the plan an apply would carry out (`--apply --dry-run`: the files it would create or rewrite, with diffs);
-- the evidence report: effective `sshd -T`, the nft table, ufw status, listening sockets, published container ports, the unattended-upgrades config and stamps, pending security updates, and whether `/var/run/reboot-required` is set.
+- the evidence report: effective `sshd -T`, the nft table, ufw status, listening sockets, published container ports, the unattended-upgrades config and stamps, pending security updates, and whether `/var/run/reboot-required` is set. Patch state is reported as counts only (no kernel version or package names), because the repository and its workflow logs are public; run with `HARDEN_VERBOSE=1` on the host itself for the detail.
 
 Exit codes:
 - `0`: OK.

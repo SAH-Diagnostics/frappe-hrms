@@ -37,8 +37,10 @@ on:
         type: choice
         options: [verify, apply]
 
+# id-token: write lets the job assume the OIDC deploy role (single job, so top level is fine).
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: erp-prod-host-harden
@@ -68,16 +70,15 @@ jobs:
       - name: Make scripts executable
         run: chmod +x .github/scripts/*.sh
 
-      # Same static deploy keys as deploy-prod.yml on main today. When deploy-prod.yml moves
-      # to the OIDC role github-actions-prod-erp-role (prepared on another branch), switch
-      # this step to aws-actions/configure-aws-credentials with that role in the same change
-      # (and add `id-token: write` to permissions), so both workflows use one identity.
-      - name: Setup AWS CLI
-        run: |
-          .github/scripts/setup-aws-cli.sh \
-            "${{ secrets.PROD_AWS_ACCESS_KEY_ID }}" \
-            "${{ secrets.PROD_AWS_SECRETS_ACCESS_KEY }}" \
-            "${{ secrets.AWS_SECRETS_REGION }}"
+      # Same identity as deploy-prod.yml and configure-nginx-prod.yml: the OIDC role
+      # github-actions-prod-erp-role, trusted for the `production` environment only. No static
+      # key, so the PROD_AWS_* key pair can be retired. Dispatch only after the role exists.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::280648354859:role/github-actions-prod-erp-role
+          aws-region: eu-west-2
+          mask-aws-account-id: true
 
       - name: Retrieve secrets from AWS Secrets Manager
         run: |
@@ -194,7 +195,7 @@ jobs:
 
       - name: Upload evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: erp-prod-hardening-evidence-${{ github.run_id }}
           path: |
