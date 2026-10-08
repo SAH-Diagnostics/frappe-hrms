@@ -1,0 +1,113 @@
+# Daily external check of the production ERP host's public exposure.
+# Modelled on Virtual Clinics' infra-exposure-monitor.yml (medplum, VC-661) so the ERP is held
+# to the same public-endpoint baseline.
+#
+# From a GitHub runner -- i.e. from the internet -- against production:
+#   - DNS: erp.sahdiagnostics.com must still resolve to the Lightsail static IP that is
+#     scanned, so the scan cannot silently measure the wrong machine.
+#   - a full TCP port scan of the static IP: only 80 and 443 may answer. SSH (22) is a
+#     failure, not a warning: deploys open it to the runner's /32 for the length of a run
+#     (lightsail-ssh-access.sh), so between runs it must be closed to the internet.
+#   - .github/scripts/check-public-tls.sh: HTTP->HTTPS 301, HSTS max-age >= 1 year,
+#     certificate valid > 14 days, TLS 1.2+ only (TLS 1.0/1.1 refused).
+# A failing run is the alert: GitHub notifies on failed scheduled workflows.
+#
+# EXPECTED TO FAIL when first merged (as measured 2026-10-08): 22/tcp is open to the world
+# and the live vhost sends no Strict-Transport-Security header. It turns green once the SSH
+# rule is restricted (infrastructure repo) and the render-nginx-conf.sh vhost is applied to
+# production (configure-nginx-prod.yml, dispatched with force). Do not weaken a check to
+# make it pass.
+#
+# Read-only: no secrets, no AWS, no SSH, contents: read. IPv4 only (hosted runners have no
+# IPv6 egress). A deploy that happens to run at the same time has 22 open to its own runner
+# only, which this scan cannot see.
+name: ERP exposure monitor
+
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: erp-exposure-monitor
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: production (erp.sahdiagnostics.com)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HOST: erp.sahdiagnostics.com
+      HOST_IP: 3.9.127.82
+      CERT_MIN_DAYS: '14'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install nmap
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nmap
+
+      - name: DNS points at the scanned address
+        run: |
+          resolved=$(getent ahostsv4 "$HOST" | awk '{print $1}' | sort -u | tr '\n' ' ')
+          echo "${HOST} -> ${resolved:-nothing}"
+          if [ "$resolved" != "${HOST_IP} " ]; then
+            echo "::error::${HOST} resolves to '${resolved% }', not ${HOST_IP}; update HOST_IP before trusting this scan"
+            exit 1
+          fi
+
+      - name: Port scan
+        run: |
+          if ! RAW=$(sudo nmap -sS -Pn -p- -T4 --max-retries 1 --min-rate 1000 --open -oG - "$HOST_IP"); then
+            echo "::error::${HOST_IP}: nmap failed; the exposure could not be measured"
+            exit 1
+          fi
+          OPEN=$(grep -oE '[0-9]+/open' <<<"$RAW" | cut -d/ -f1 | sort -n | tr '\n' ' ' || true)
+          echo "Open on ${HOST_IP}: ${OPEN:-none}"
+
+          # 80 and 443 must answer. If they do not, the scan did not reach the host, and an
+          # empty result would otherwise read as "nothing exposed".
+          for p in 80 443; do
+            if [[ " ${OPEN} " != *" ${p} "* ]]; then
+              echo "::error::${HOST_IP}: port ${p} did not answer; the scan is not trustworthy"
+              exit 1
+            fi
+          done
+
+          unexpected=""
+          for p in $OPEN; do
+            case "$p" in
+              80|443) ;;
+              *) unexpected="$unexpected $p" ;;
+            esac
+          done
+
+          # A fast scan can mis-read a port under load; confirm before failing.
+          if [ -n "$unexpected" ]; then
+            echo "Unexpected open port(s):${unexpected}; re-checking..."
+            confirmed=""
+            for p in $unexpected; do
+              if sudo nmap -sS -Pn -p "$p" --open -oG - "$HOST_IP" | grep -q "${p}/open"; then
+                confirmed="$confirmed $p"
+              fi
+            done
+            if [ -n "$confirmed" ]; then
+              echo "::error::${HOST_IP}: port(s)${confirmed} are publicly reachable; only 80 and 443 are allowed"
+              exit 1
+            fi
+            echo "Re-check found nothing open; first scan was a false reading."
+          fi
+          echo "${HOST_IP}: only approved ports are reachable"
+
+      - name: TLS
+        # Runs even when the port scan failed, so one run reports every breach.
+        if: success() || failure()
+        run: bash .github/scripts/check-public-tls.sh "$HOST" "$CERT_MIN_DAYS"

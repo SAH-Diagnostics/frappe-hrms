@@ -31,7 +31,10 @@ fi
 
 # A location with its own add_header drops every add_header inherited from the server
 # block, so /assets repeats these.
-SECURITY_HEADERS='add_header Strict-Transport-Security "max-age=31536000" always;
+# HSTS matches Virtual Clinics (two years, includeSubDomains) but without `preload`: preload
+# is a request to hard-code the whole registrable domain into browsers, which needs the
+# header on the apex sahdiagnostics.com (not served by this host) and is slow to undo.
+SECURITY_HEADERS='add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;'
@@ -44,6 +47,7 @@ upstream frappe {
 server {
     listen 80;
     server_name $DOMAIN;
+    server_tokens off;
 
     location / {
         return 301 https://\$host\$request_uri;
@@ -53,6 +57,8 @@ server {
 server {
     listen 443 ssl http2;
     server_name $DOMAIN;
+    # No nginx version in the Server header or on error pages.
+    server_tokens off;
 
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;

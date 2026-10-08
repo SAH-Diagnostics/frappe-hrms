@@ -11,8 +11,11 @@ on:
         type: boolean
         default: false
 
+# Top level rather than on the job: the controls test (T1) forbids job-level permissions, and
+# T2 holds this workflow to one job, so this grants id-token: write to the deploy job only.
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   deploy:
@@ -30,12 +33,14 @@ jobs:
       - name: Make scripts executable
         run: chmod +x .github/scripts/*.sh
 
-      - name: Setup AWS CLI
-        run: |
-          .github/scripts/setup-aws-cli.sh \
-            "${{ secrets.PROD_AWS_ACCESS_KEY_ID }}" \
-            "${{ secrets.PROD_AWS_SECRETS_ACCESS_KEY }}" \
-            "${{ secrets.AWS_SECRETS_REGION }}"
+      - name: Configure AWS credentials (OIDC)
+        # Short-lived credentials from the GitHub OIDC token; no static key is held here.
+        # The role trusts this repository's `production` environment only (DEPLOYMENT_CONTROLS.md §8).
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::280648354859:role/github-actions-prod-erp-role
+          aws-region: eu-west-2
+          mask-aws-account-id: true
 
       - name: Retrieve secrets from AWS Secrets Manager
         run: |
@@ -161,6 +166,16 @@ jobs:
             echo "### Deployment Time"
             echo "- $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refresh AWS credentials for the revoke (OIDC)
+        # The OIDC session lasts one hour; assume the role again so a long deploy cannot
+        # leave the revoke below without credentials and the runner's /32 on the SSH rule.
+        if: always() && env.VC647_RUNNER_CIDR != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::280648354859:role/github-actions-prod-erp-role
+          aws-region: eu-west-2
+          mask-aws-account-id: true
 
       - name: Revoke this runner's SSH access (VC-647)
         # Not continue-on-error: a runner address left on the SSH rule must turn the run

@@ -55,3 +55,6 @@ jobs:
 
       - name: Env-file upload does not keep an old file mode (copy-file-to-instance.sh)
         run: bash .github/scripts/__tests__/copy-file-to-instance.test.sh
+
+      - name: Public endpoint checks used by the exposure monitor (check-public-tls.sh)
+        run: bash .github/scripts/__tests__/check-public-tls.test.sh
