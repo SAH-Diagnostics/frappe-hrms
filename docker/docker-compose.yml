@@ -23,6 +23,21 @@ services:
     image: redis:8.10.2-alpine
     restart: unless-stopped
 
+  # One-shot: the frappe service mounts frappe-site-data/<site> with volume.subpath, and Docker
+  # refuses to start a container whose subpath does not exist yet (a fresh volume). This creates
+  # it, owned by the frappe user (uid 1000), and exits. No restart policy: it runs on `compose up`
+  # only, and a restarted frappe container finds the folder already there.
+  # Exec form with bash -c: a plain string `command:` is not run through a shell, so `&& chown`
+  # would be passed to mkdir as arguments and the folder would stay root-owned.
+  site-volume-init:
+    image: frappe/bench:v5.31.0@sha256:6968600ad6524a150ee6cf2e1e58faa93932000565946abf1795c7f268751409
+    user: root
+    command: ["bash", "-c", "mkdir -p \"/home/frappe/site-data/$$SITE_NAME\" && chown 1000:1000 \"/home/frappe/site-data/$$SITE_NAME\""]
+    environment:
+      - SITE_NAME=${SITE_NAME:-hrms.localhost}
+    volumes:
+      - frappe-site-data:/home/frappe/site-data
+
   frappe:
     image: frappe/bench:v5.31.0@sha256:6968600ad6524a150ee6cf2e1e58faa93932000565946abf1795c7f268751409
     restart: unless-stopped
@@ -68,9 +83,18 @@ services:
     working_dir: /home/frappe
     volumes:
       - .:/workspace
-      # sites/<site> (uploaded files, site_config.json) lives here so a deploy's
-      # `compose down` does not discard it; init.sh links it into the bench.
+      # The volume root holds the S3 push log (create-push-cron-job.sh) and each site's folder.
       - frappe-site-data:/home/frappe/site-data
+      # sites/<site> (uploaded files, site_config.json with the encryption_key) is the volume's
+      # <site> folder mounted in place, so a deploy's `compose down` does not discard it. It must
+      # be a real directory, not a symlink: Frappe's get_sites() skips symlinked sites, so the
+      # scheduler ran nothing, and public files 404 because their path resolves outside the site
+      # (VC-776). volume.subpath needs Docker Engine 26+ (API 1.45); deploy-docker-app.sh checks it.
+      - type: volume
+        source: frappe-site-data
+        target: /home/frappe/frappe-bench/sites/${SITE_NAME:-hrms.localhost}
+        volume:
+          subpath: ${SITE_NAME:-hrms.localhost}
     ports:
       # Loopback only (VC-647). nginx on the host proxies 80/443 to these two ports.
       # Publishing them on 0.0.0.0 lets Docker route internet traffic straight to the
@@ -78,8 +102,12 @@ services:
       - 127.0.0.1:8000:8000
       - 127.0.0.1:9000:9000
     depends_on:
-      - redis
-      - mariadb
+      site-volume-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      mariadb:
+        condition: service_started
 
 volumes:
   mariadb-data:

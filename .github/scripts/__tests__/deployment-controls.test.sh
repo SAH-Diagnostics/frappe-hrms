@@ -44,7 +44,7 @@
 #   T16 (VC-652) one rendered vhost for every environment: HTTP only redirects, HTTPS carries the
 #       security headers; the certificate is ensured first, certbot never rewrites the vhost,
 #       and configure-nginx.sh restores on a bad config and fails a run that does not serve HTTPS
-#   T17 (VC-644) sites/<site> lives on the frappe-site-data volume and the encryption_key is a
+#   T17 (VC-644, VC-776) sites/<site> is the frappe-site-data volume mounted in place and the encryption_key is a
 #       required deploy secret; nothing removes the volume, and the first deploy with it copies
 #       the running container's files in before `compose down` (never its random key)
 #   T18 the ERP exposure monitor runs daily, is read-only, holds no secrets and fails on SSH
@@ -658,10 +658,27 @@ echo "T17: site data and the encryption key survive a deploy"
 compose="$REPO_ROOT/docker/docker-compose.yml"
 if require_file T17 "$compose"; then
     check "T17 compose: frappe-site-data is a declared named volume" 1 "$(lf "$compose" | grep -cE '^  frappe-site-data:[[:space:]]*$')"
+    frappe_block="$(lf "$compose" | awk '/^  frappe:/ { b = 1; next } b && /^  [a-z]/ { b = 0 } b')"
     check "T17 compose: frappe mounts it at /home/frappe/site-data" 1 \
-        "$(lf "$compose" | grep -cE '^[[:space:]]+- frappe-site-data:/home/frappe/site-data[[:space:]]*$')"
-    # A mount inside the bench creates $BENCH_DIR before `bench init`, which init.sh then skips.
-    check "T17 compose: no mount inside /home/frappe/frappe-bench" 0 "$(lf "$compose" | grep -cE ':/home/frappe/frappe-bench')"
+        "$(grep -cE '^[[:space:]]+- frappe-site-data:/home/frappe/site-data[[:space:]]*$' <<< "$frappe_block")"
+    # VC-776: sites/<site> must be the volume mounted in place, not a symlink into it -- Frappe's
+    # get_sites() skips symlinked sites, so the scheduler ran nothing from 25 Sep 2026.
+    init_block="$(lf "$compose" | awk '/^  site-volume-init:/ { b = 1; next } b && /^  [a-z]/ { b = 0 } b')"
+    check "T17 compose: frappe mounts the volume's <site> folder at sites/<site>" 1 \
+        "$(grep -cxF '        target: /home/frappe/frappe-bench/sites/${SITE_NAME:-hrms.localhost}' <<< "$frappe_block")"
+    check "T17 compose: ...from frappe-site-data" 2 "$(grep -cE '(^|[[:space:]])(- )?(source: )?frappe-site-data' <<< "$frappe_block")"
+    check "T17 compose: ...via volume.subpath = the site name" 1 \
+        "$(grep -cxF '          subpath: ${SITE_NAME:-hrms.localhost}' <<< "$frappe_block")"
+    check "T17 compose: site-volume-init service exists" 1 "$(lf "$compose" | grep -cxF '  site-volume-init:')"
+    check "T17 compose: site-volume-init runs bash -c (exec form), so chown is not dropped" 1 \
+        "$(grep -cE '^    command: \["bash", "-c", "mkdir -p .* && chown 1000:1000 ' <<< "$init_block")"
+    check "T17 compose: site-volume-init mounts the whole volume" 1 \
+        "$(grep -cE '^[[:space:]]+- frappe-site-data:/home/frappe/site-data$' <<< "$init_block")"
+    check "T17 compose: site-volume-init runs as root (Docker creates the volume root root-owned)" 1 \
+        "$(grep -cxF '    user: root' <<< "$init_block")"
+    check "T17 compose: site-volume-init has no restart policy (one-shot)" 0 "$(grep -c 'restart:' <<< "$init_block")"
+    check "T17 compose: frappe waits for site-volume-init to complete" 1 \
+        "$(grep -A1 -xF '      site-volume-init:' <<< "$frappe_block" | grep -cxF '        condition: service_completed_successfully')"
     check "T17 compose: ENCRYPTION_KEY comes from FRAPPE_ENCRYPTION_KEY and is required" 1 \
         "$(lf "$compose" | grep -cF -- '- ENCRYPTION_KEY=${FRAPPE_ENCRYPTION_KEY:?')"
 fi
@@ -691,6 +708,42 @@ no_env_file="$(cat "$REPO_ROOT/.github/scripts/deploy-docker-app.sh" "$REPO_ROOT
     | grep -v '^[[:space:]]*#' | grep -E 'docker compose .*-f ' | grep -vc -- '--env-file')"
 check "T17 every compose -f call on the box passes the deploy env file" 0 "$no_env_file"
 
+# VC-776: volume.subpath needs Docker API 1.45. The preflight must run before compose down, so an
+# old engine leaves the running stack up instead of taking it down for good.
+path="$REPO_ROOT/.github/scripts/deploy-docker-app.sh"
+if require_file T17 "$path"; then
+    pre_line="$(lf "$path" | grep -n 'Server.APIVersion' | head -1 | cut -d: -f1)"
+    down_line="$(lf "$path" | grep -n 'docker compose .* down' | head -1 | cut -d: -f1)"
+    if [ -n "$pre_line" ] && [ -n "$down_line" ] && [ "$pre_line" -lt "$down_line" ]; then
+        pass "T17 deploy-docker-app.sh: checks the Docker API before compose down"
+    else
+        fail "T17 deploy-docker-app.sh: API preflight ($pre_line) does not run before compose down ($down_line)"
+    fi
+    # Run the preflight as the box would: the heredoc's \$ becomes $ on the remote side.
+    # Through the Compose parse check: from docker_api= to the first fi after `config -q`.
+    preflight="$(lf "$path" | awk '/^docker_api=/ { b = 1 } b { print } b && /config -q/ { c = 1 } c && /^fi$/ { exit }' \
+        | sed 's/\\\$/$/g')"
+    pf_dir="$(mktemp -d)"; mkdir -p "$pf_dir/bin"
+    printf '#!/usr/bin/env bash\nexec "$@"\n' > "$pf_dir/bin/sudo"
+    printf '#!/usr/bin/env bash\ncase " $* " in *" config -q "*) exit "${CFG_RC:-0}" ;; esac\n[ -n "$API" ] && echo "$API"\n' > "$pf_dir/bin/docker"
+    chmod +x "$pf_dir/bin/sudo" "$pf_dir/bin/docker"
+    run_preflight() { API="$1" PATH="$pf_dir/bin:$PATH" bash -c "set -e; $preflight; echo REACHED-DOWN" 2>&1; }
+    check "T17 preflight: extracted" 1 "$(grep -c 'docker_api=' <<< "$preflight")"
+    check "T17 preflight: includes the Compose parse check" 1 "$(grep -c 'config -q' <<< "$preflight")"
+    out="$(CFG_RC=1 run_preflight 1.52)"
+    check "T17 preflight: a Compose that cannot parse the file stops before compose down" "0 1" \
+        "$(grep -c REACHED-DOWN <<< "$out") $(grep -c 'FATAL: docker compose cannot parse' <<< "$out")"
+    for api in 1.45 1.51 1.52; do
+        check "T17 preflight: API $api continues" 1 "$(run_preflight "$api" | grep -c REACHED-DOWN)"
+    done
+    for api in 1.44 1.41 1.9 ""; do
+        out="$(run_preflight "$api")"
+        check "T17 preflight: API '${api:-none}' stops before compose down" "0 1" \
+            "$(grep -c REACHED-DOWN <<< "$out") $(grep -c 'FATAL: Docker API' <<< "$out")"
+    done
+    rm -rf "$pf_dir"
+fi
+
 seed="$REPO_ROOT/.github/scripts/remote/seed-site-volume.sh"
 if require_file T17 "$seed"; then
     check "T17 seed-site-volume.sh: never copies site_config.json (its key is the random one)" 0 \
@@ -710,6 +763,7 @@ case "$*" in *" run "*"tar -x"*) ;; *" run "*) cat > /dev/null ;; esac
 case "$*" in
     *" ps -q frappe"*) [ -n "${NO_CONTAINER:-}" ] || echo cid123 ;;
     "exec cid123 test -L "*) [ -n "${LINKED:-}" ] ;;
+    "exec cid123 grep -q "*" /proc/self/mountinfo") [ -n "${MOUNTED:-}" ] ;;
     "exec cid123 test -d "*) exit 0 ;;
     "cp cid123:"*) echo "TAR ${2##*/}" ;;
     *" run "*"test -e "*) [ -n "${VOLUME_HAS_SITE:-}" ] ;;
@@ -734,6 +788,11 @@ STUB
     check "T17 seed: no running container -> exits 0, copies nothing" "0 0" "$(NO_CONTAINER=1 run_seed none) $(grep -c '^cp ' "$t17_dir/none.log")"
     check "T17 seed: container already on the volume -> copies nothing" "0 0" "$(LINKED=1 run_seed linked) $(grep -c '^cp ' "$t17_dir/linked.log")"
     check "T17 seed: volume already holds the site -> never overwritten" "0 0" "$(VOLUME_HAS_SITE=1 run_seed full) $(grep -c '^cp ' "$t17_dir/full.log")"
+    check "T17 seed: container with the site mounted in place -> copies nothing" "0 0" \
+        "$(MOUNTED=1 run_seed mounted) $(grep -c '^cp ' "$t17_dir/mounted.log")"
+    # frappe carries the subpath mount, which cannot start on a volume without the <site> folder.
+    check "T17 seed: throwaway containers use site-volume-init, never frappe" "0 0" \
+        "$(grep ' run ' "$t17_dir/fresh.log" | grep -vc ' site-volume-init -c ') $(grep ' run ' "$t17_dir/fresh.log" | grep -c ' frappe -c ')"
     # The deploy runs the seed inside `ssh ... bash -s <<EOF`: stdin is the rest of that script.
     # A seed that let `compose run` read it skipped compose down/up (staging, 2026-09-25).
     : > "$t17_dir/heredoc.log"

@@ -45,7 +45,9 @@ if [ -z "$container" ]; then
     exit 0
 fi
 
-if sudo docker exec "$container" test -L "$SITE_IN_BENCH"; then
+# A symlink is the VC-644 layout and a mount point is the VC-776 one; both are the volume.
+if sudo docker exec "$container" test -L "$SITE_IN_BENCH" \
+    || sudo docker exec "$container" grep -q " $SITE_IN_BENCH " /proc/self/mountinfo; then
     echo "The running container already uses the volume; nothing to seed."
     exit 0
 fi
@@ -55,10 +57,13 @@ if ! sudo docker exec "$container" test -d "$SITE_IN_BENCH"; then
     exit 0
 fi
 
-# A throwaway container of the same service mounts the same named volume. `compose run`
-# forwards stdin, and this script runs inside the deploy's `ssh ... bash -s` heredoc, whose
-# stdin is the rest of that script: only the tar stream may read stdin (into_volume).
-into_volume() { "${COMPOSE[@]}" run --rm --no-deps -T --user root --entrypoint sh frappe -c "$1"; }
+# A throwaway container mounts the whole named volume. It is the site-volume-init service, not
+# frappe: frappe also mounts the volume's <site> folder via volume.subpath, and Docker refuses to
+# start a container whose subpath does not exist yet -- which is exactly the volume this script
+# fills. `compose run` forwards stdin, and this script runs inside the deploy's
+# `ssh ... bash -s` heredoc, whose stdin is the rest of that script: only the tar stream may read
+# stdin (into_volume).
+into_volume() { "${COMPOSE[@]}" run --rm --no-deps -T --user root --entrypoint sh site-volume-init -c "$1"; }
 in_volume() { into_volume "$1" < /dev/null; }
 
 if in_volume "test -e '$SITE_IN_VOLUME'"; then

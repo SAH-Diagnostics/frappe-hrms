@@ -36,15 +36,27 @@ FAILURE_LOG="$FAILURE_LOG_DIR/last-failure.log"
 
 cd "$DEPLOY_DIR" || { echo "FATAL: $DEPLOY_DIR is not accessible." >&2; exit 1; }
 
+COMPOSE=(sudo docker compose --env-file "$DEPLOY_DIR/.env" -f "$COMPOSE_FILE")
+
 # A site that answers can still be one deploy away from losing its data: stored secrets are
 # encrypted with site_config's encryption_key, and site_config only survives the next
-# `compose down` when the site directory is on the frappe-site-data volume. Prints one state
-# word; never the key.
+# `compose down` when the site directory is the frappe-site-data volume mounted in place.
+# It must be a real mount, not a symlink: Frappe's get_sites() skips symlinked sites, so the
+# scheduler runs nothing, and public files 404 because their path resolves outside the site
+# (VC-776). Mount points come from mountinfo field 5, as in init.sh's assert_site_mount.
+# Prints one state word; never the key. SITE_DIR and MOUNTINFO are overridable for the tests.
 check_site_persistence() {
     local state
-    state="$(sudo docker compose --env-file "$DEPLOY_DIR/.env" -f "$COMPOSE_FILE" exec -T frappe python3 - 2>/dev/null <<'PY'
+    state="$("${COMPOSE[@]}" exec -T frappe python3 - 2>/dev/null <<'PERSIST_PY'
 import json, os
-site_dir = "/home/frappe/frappe-bench/sites/" + os.environ.get("SITE_NAME", "")
+site_dir = os.environ.get("SITE_DIR") or "/home/frappe/frappe-bench/sites/" + os.environ.get("SITE_NAME", "")
+mountinfo = os.environ.get("MOUNTINFO") or "/proc/self/mountinfo"
+def mounted(path):
+    try:
+        with open(mountinfo) as f:
+            return any(len(line.split()) > 4 and line.split()[4] == path for line in f)
+    except OSError:
+        return False
 try:
     with open(site_dir + "/site_config.json") as f:
         current = json.load(f).get("encryption_key")
@@ -52,17 +64,116 @@ except Exception:
     print("unreadable")
     raise SystemExit
 key = "match" if current and current == os.environ.get("ENCRYPTION_KEY") else "absent" if not current else "mismatch"
-print(key + (":volume" if os.path.islink(site_dir) else ":no-volume"))
-PY
+if os.path.islink(site_dir):
+    where = "link"
+elif os.path.realpath(site_dir) == site_dir and mounted(site_dir):
+    where = "mount"
+else:
+    where = "no-volume"
+print(key + ":" + where)
+PERSIST_PY
 )" || state="unreachable"
 
-    if [ "$state" = "match:volume" ]; then
-        echo "✓ encryption_key matches the deploy secret and the site directory is on the volume"
+    if [ "$state" = "match:mount" ]; then
+        echo "✓ encryption_key matches the deploy secret and the site directory is the mounted volume"
         return 0
     fi
     echo "FATAL: site persistence check failed (state: ${state:-empty})." >&2
-    echo "Expected the pinned encryption_key and sites/<site> on the frappe-site-data volume;" >&2
-    echo "without both, the next deploy loses stored secrets or uploaded files." >&2
+    echo "Expected the pinned encryption_key and sites/<site> to be the frappe-site-data volume" >&2
+    echo "mounted in place (not a symlink); otherwise the next deploy loses stored secrets or" >&2
+    echo "uploaded files, or the scheduler cannot see the site." >&2
+    return 1
+}
+
+# The scheduler skipped the site for two months after VC-644 and nothing went red: the site
+# answered, so the deploy passed (VC-776). This checks that Frappe lists the site, that the
+# scheduler is enabled and its process is running, and that a scheduled job has started since
+# this container started -- `last_execution` is written by the worker when a job starts.
+#
+# Each attempt is a separate `exec`, so a separate database connection: one long-lived
+# connection would keep reading one snapshot (MariaDB's default REPEATABLE READ isolation) and
+# never see a new value.
+# Each attempt prints a line, so the SSH session never idles. Prints state words only.
+SCHEDULER_TIMEOUT="${SCHEDULER_TIMEOUT:-600}"
+SCHEDULER_INTERVAL="${SCHEDULER_INTERVAL:-30}"
+SCHEDULER_PAUSED=0
+scheduler_state() { # $1 = container start time (UTC, RFC 3339)
+    "${COMPOSE[@]}" exec -T -e VERIFY_BASELINE="$1" -w /home/frappe/frappe-bench/sites frappe \
+        /home/frappe/frappe-bench/env/bin/python - 2>/dev/null <<'SCHED_PY'
+import datetime, os
+site = os.environ.get("SITE_NAME", "")
+try:
+    import frappe
+    from frappe.utils import convert_utc_to_system_timezone, get_sites
+    from frappe.utils.scheduler import is_schduler_process_running, is_scheduler_inactive
+    if site not in get_sites(os.environ.get("SITES_PATH") or "."):
+        print("invisible")
+        raise SystemExit
+    frappe.init(site=site, sites_path=os.environ.get("SITES_PATH") or ".")
+    frappe.connect()
+    if frappe.local.conf.pause_scheduler or frappe.local.conf.maintenance_mode:
+        print("paused")
+        raise SystemExit
+    if is_scheduler_inactive(verbose=False):
+        print("inactive")
+        raise SystemExit
+    if not is_schduler_process_running():
+        print("no-scheduler")
+        raise SystemExit
+    started = datetime.datetime.fromisoformat(os.environ["VERIFY_BASELINE"][:19])
+    baseline = convert_utc_to_system_timezone(started).replace(tzinfo=None)
+    last = frappe.db.sql("select max(last_execution) from `tabScheduled Job Type`")[0][0]
+    print("advancing" if last and last >= baseline else "stalled")
+except SystemExit:
+    raise
+except Exception:
+    print("error")
+SCHED_PY
+}
+
+check_scheduler() {
+    local started state elapsed=0 attempt=0
+    started="$(sudo docker inspect -f '{{.State.StartedAt}}' "$("${COMPOSE[@]}" ps -q frappe 2>/dev/null)" 2>/dev/null)" || started=""
+    if [ -z "$started" ]; then
+        echo "FATAL: scheduler check failed (state: no-container)." >&2
+        return 1
+    fi
+
+    while :; do
+        attempt=$((attempt + 1))
+        state="$(scheduler_state "$started")" || state="unreachable"
+        case "$state" in
+            advancing | paused | invisible | inactive | no-scheduler | stalled | error | unreachable) ;;
+            *) state="error" ;;
+        esac
+        echo "scheduler attempt ${attempt} (${elapsed}s): ${state:-empty}"
+        case "$state" in
+            advancing)
+                echo "✓ the scheduler sees the site and a scheduled job has run since the container started"
+                return 0
+                ;;
+            paused)
+                # pause_scheduler / maintenance_mode in site_config is an operator's deliberate
+                # hold (e.g. to triage a queued backlog before release), so it does not fail the
+                # deploy. The site is still checked to be visible above, which is the VC-776 bug.
+                echo "WARNING: the scheduler is paused in site_config (pause_scheduler or maintenance_mode)." >&2
+                echo "Scheduled jobs, inbox fetch and the email queue will not run until it is unset." >&2
+                SCHEDULER_PAUSED=1
+                return 0
+                ;;
+            invisible | inactive)
+                break
+                ;;
+        esac
+        [ "$elapsed" -ge "$SCHEDULER_TIMEOUT" ] && break
+        sleep "$SCHEDULER_INTERVAL"
+        elapsed=$((elapsed + SCHEDULER_INTERVAL))
+    done
+
+    echo "FATAL: scheduler check failed (state: ${state:-empty})." >&2
+    echo "Expected Frappe to list the site (get_sites skips a symlinked site), the scheduler" >&2
+    echo "enabled with its process running, and a Scheduled Job Type to start after boot." >&2
+    echo "Without that, inbox fetch, the email queue and every scheduled job silently stop." >&2
     return 1
 }
 
@@ -126,8 +237,11 @@ while [ "$elapsed" -lt "$TIMEOUT_SECONDS" ]; do
         2??|3??)
             echo "attempt ${attempt} (${elapsed}s): HTTP ${http_code} -- site is up"
             check_site_persistence || exit 1
+            check_scheduler || exit 1
             check_files_backup || exit 1
             echo "=== Site verified ==="
+            # Repeated as the last line: a hold that is never lifted is the original incident.
+            [ "$SCHEDULER_PAUSED" = 1 ] && echo "WARNING: the scheduler is still PAUSED -- unset pause_scheduler / maintenance_mode."
             exit 0
             ;;
         *)

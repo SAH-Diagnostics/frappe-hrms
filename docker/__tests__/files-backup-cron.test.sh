@@ -146,8 +146,10 @@ check "T4 the cron file ends with a newline (cron ignores an unterminated last l
     "" "$(tail -c 1 "$WORK/cron.d" 2>/dev/null | tr -d '\n')"
 check "T4 the push log defaults to the frappe-site-data volume, which survives a deploy" 1 \
     "$(tr -d '\r' < "$CRON_SH" | grep -cxF 'PUSH_LOG="${PUSH_LOG:-/home/frappe/site-data/push-to-bucket.log}"')"
+# Scoped to the frappe service, which runs the cron; site-volume-init mounts the volume too.
 check "T4 compose mounts that volume at /home/frappe/site-data" 1 \
-    "$(tr -d '\r' < "$COMPOSE" | grep -cE '^[[:space:]]+- frappe-site-data:/home/frappe/site-data$')"
+    "$(tr -d '\r' < "$COMPOSE" | awk '/^  frappe:/ { b = 1; next } b && /^  [a-z]/ { b = 0 } b' \
+        | grep -cE '^[[:space:]]+- frappe-site-data:/home/frappe/site-data$')"
 
 run_cron_job "$CRON_SH" FILES_BACKUP_HOURS=2 >/dev/null
 check "T5 the old FILES_BACKUP_HOURS spelling is still accepted" \

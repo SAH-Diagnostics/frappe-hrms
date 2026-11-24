@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Tests for the site persistence steps in docker/init.sh: link_site_dir and
+# Tests for the site persistence steps in docker/init.sh: assert_site_mount and
 # ensure_encryption_key.
 #
 # Ticket: VC-644 — every deploy lost the Frappe encryption_key and uploaded files.
@@ -12,11 +12,18 @@
 # a random one and every stored secret (2FA seeds, email passwords, API secrets) became
 # undecryptable; uploaded files were discarded with the container.
 #
-# init.sh now links sites/<site> into the frappe-site-data volume and writes the pinned key
-# from the deploy secret. The dangerous direction is overwriting a key that already encrypts
-# data, so a different key must stop the boot unless the site was created during it.
+# init.sh writes the pinned key from the deploy secret, and sites/<site> is the frappe-site-data
+# volume mounted in place.
 #
-# The two functions are extracted from init.sh and run against temp directories; `sudo` is
+# Ticket: VC-776 — VC-644 first symlinked sites/<site> into the volume. Frappe's get_sites()
+# skips symlinked sites, so from 25 Sep 2026 the scheduler ran nothing (no inbox fetch, no
+# email queue, no HR jobs) and public files 404'd, with no error anywhere. The site must now be
+# a real mount point; a symlink, a plain folder or a symlinked parent stops the boot.
+#
+# For the key, the dangerous direction is overwriting a key that already encrypts data, so a
+# different key must stop the boot unless the site was created during it.
+#
+# The functions are extracted from init.sh and run against temp directories; `sudo` is
 # stubbed. The wiring checks read init.sh itself. Nothing here touches a server or database.
 #
 # Run:  bash docker/__tests__/init-site-persistence.test.sh
@@ -51,7 +58,7 @@ exec "$@"
 STUB
 chmod +x "$WORK/bin/sudo"
 
-sed -n '/^link_site_dir() {/,/^}/p' "$INIT_SH" > "$WORK/link_site_dir.sh"
+sed -n '/^assert_site_mount() {/,/^}/p' "$INIT_SH" > "$WORK/assert_site_mount.sh"
 sed -n '/^ensure_encryption_key() {/,/^}/p' "$INIT_SH" > "$WORK/ensure_encryption_key.sh"
 sed -n '/^ensure_site_dirs() {/,/^}/p' "$INIT_SH" > "$WORK/ensure_site_dirs.sh"
 
@@ -59,7 +66,7 @@ echo "Testing site persistence in: $INIT_SH"
 echo
 
 echo "T0: the functions exist in init.sh"
-check "link_site_dir extracted" 1 "$(grep -c '^link_site_dir() {' "$WORK/link_site_dir.sh")"
+check "assert_site_mount extracted" 1 "$(grep -c '^assert_site_mount() {' "$WORK/assert_site_mount.sh")"
 check "ensure_encryption_key extracted" 1 "$(grep -c '^ensure_encryption_key() {' "$WORK/ensure_encryption_key.sh")"
 echo
 
@@ -140,64 +147,94 @@ check "corrupt config: exited 1" 1 "$(cat "$S/status")"
 check "corrupt config: file untouched" '{not json' "$(cat "$S/bench/sites/site.test/site_config.json")"
 echo
 
-# $1 = scenario dir; bench at $1/bench, volume at $1/site-data.
-run_link() {
-    BENCH_DIR="$1/bench" SITE_NAME="site.test" SITE_DATA_DIR="$1/site-data" PATH="$WORK/bin:$PATH" \
-        bash -c "set -e; . '$WORK/link_site_dir.sh'; link_site_dir" > "$1/stdout" 2> "$1/stderr"
+# $1 = scenario dir; bench at $1/bench, mountinfo at $1/mountinfo (absent = no mounts).
+run_assert() {
+    [ -f "$1/mountinfo" ] || : > "$1/mountinfo"
+    BENCH_DIR="$1/bench" SITE_NAME="site.test" MOUNTINFO="$1/mountinfo" PATH="$WORK/bin:$PATH" \
+        bash -c "set -e; . '$WORK/assert_site_mount.sh'; assert_site_mount" > "$1/stdout" 2> "$1/stderr"
     echo $? > "$1/status"
 }
+mount_at() { # $1 = scenario dir, $2 = mount point; a mountinfo line shaped like the kernel's
+    echo "1234 1200 0:52 /volumes/frappe-site-data/_data/site.test $2 rw,relatime - ext4 /dev/root rw" >> "$1/mountinfo"
+}
+new_scenario() { mkdir -p "$1"; (cd "$1" && pwd -P); } # physical path: macOS /var is a symlink
 
-echo "T7: without the volume the boot stops"
-S="$WORK/t7"; mkdir -p "$S/bench/sites"
-run_link "$S"
-check "exited 1" 1 "$(cat "$S/status")"
-check "FATAL names the missing volume" 1 "$(grep -c 'volume is not mounted' "$S/stderr")"
-echo
-
-echo "T8: a fresh bench is linked into the volume, and a second boot is a no-op"
-S="$WORK/t8"; mkdir -p "$S/bench/sites" "$S/site-data"
-run_link "$S"
-check "first boot exited 0" 0 "$(cat "$S/status")"
-check "site dir is a symlink to the volume" "$S/site-data/site.test" "$(readlink "$S/bench/sites/site.test")"
-run_link "$S"
-check "second boot exited 0" 0 "$(cat "$S/status")"
-check "still linked to the volume" "$S/site-data/site.test" "$(readlink "$S/bench/sites/site.test")"
-echo
-
-echo "T9: files already in the bench move into an empty volume"
-S="$WORK/t9"; mkdir -p "$S/bench/sites/site.test/private/files" "$S/site-data"
-echo data > "$S/bench/sites/site.test/private/files/a.pdf"
-run_link "$S"
+echo "T7: the site folder mounted from the volume boots, and a second boot is a no-op"
+S="$(new_scenario "$WORK/t7")"; mkdir -p "$S/bench/sites/site.test"
+mount_at "$S" "$S/bench/sites/site.test"
+run_assert "$S"
 check "exited 0" 0 "$(cat "$S/status")"
-check "file now on the volume" data "$(cat "$S/site-data/site.test/private/files/a.pdf" 2>/dev/null)"
-check "file reachable through the link" data "$(cat "$S/bench/sites/site.test/private/files/a.pdf" 2>/dev/null)"
+check "reports the mounted volume" 1 "$(grep -c 'frappe-site-data volume' "$S/stdout")"
+run_assert "$S"
+check "second boot exited 0" 0 "$(cat "$S/status")"
+check "nothing turned into a symlink" no "$([ -L "$S/bench/sites/site.test" ] && echo yes || echo no)"
 echo
 
-echo "T10: conflicting site data stops the boot and nothing is removed"
-S="$WORK/t10"; mkdir -p "$S/bench/sites/site.test" "$S/site-data/site.test"
-echo bench > "$S/bench/sites/site.test/x"; echo volume > "$S/site-data/site.test/x"
-run_link "$S"
+echo "T8: a symlinked site stops the boot (Frappe's scheduler skips symlinked sites)"
+S="$(new_scenario "$WORK/t8")"; mkdir -p "$S/bench/sites" "$S/site-data/site.test"
+ln -s "$S/site-data/site.test" "$S/bench/sites/site.test"
+mount_at "$S" "$S/bench/sites/site.test"
+run_assert "$S"
 check "exited 1" 1 "$(cat "$S/status")"
-check "bench copy kept" bench "$(cat "$S/bench/sites/site.test/x")"
-check "volume copy kept" volume "$(cat "$S/site-data/site.test/x")"
-S="$WORK/t10b"; mkdir -p "$S/bench/sites" "$S/site-data" "$S/elsewhere"
-ln -s "$S/elsewhere" "$S/bench/sites/site.test"
-run_link "$S"
-check "a link to the wrong place: exited 1" 1 "$(cat "$S/status")"
+check "FATAL names the symlink and why" 1 "$(grep -c "is a symlink. Frappe's scheduler ignores symlinked sites" "$S/stderr")"
+check "the link is left in place" "$S/site-data/site.test" "$(readlink "$S/bench/sites/site.test")"
+echo
+
+echo "T9: a plain folder that is not a mount stops the boot (the next deploy would discard it)"
+S="$(new_scenario "$WORK/t9")"; mkdir -p "$S/bench/sites/site.test"
+mount_at "$S" "$S/bench/sites/other.site"
+run_assert "$S"
+check "exited 1" 1 "$(cat "$S/status")"
+check "FATAL names the missing mount" 1 "$(grep -c 'is not a mount point' "$S/stderr")"
+echo
+
+echo "T10: a missing site folder, or one reached through a symlinked parent, stops the boot"
+S="$(new_scenario "$WORK/t10")"; mkdir -p "$S/bench/sites"
+run_assert "$S"
+check "missing: exited 1" 1 "$(cat "$S/status")"
+check "missing: FATAL" 1 "$(grep -c 'FATAL: .* is missing' "$S/stderr")"
+S="$(new_scenario "$WORK/t10b")"; mkdir -p "$S/real-sites/site.test" "$S/bench"
+ln -s "$S/real-sites" "$S/bench/sites"
+mount_at "$S" "$S/bench/sites/site.test"
+run_assert "$S"
+check "symlinked parent: exited 1" 1 "$(cat "$S/status")"
+check "symlinked parent: FATAL" 1 "$(grep -c 'a parent folder is a symlink' "$S/stderr")"
 echo
 
 # ---------------------------------------------------------------------------
 echo "T11: init.sh wires both steps in before anything can encrypt"
 line_of() { grep -n -F -- "$1" "$INIT_SH" | head -1 | cut -d: -f1; }
 all_lines() { grep -n -F -- "$1" "$INIT_SH" | cut -d: -f1; }
-bench_init=$(line_of 'bench init --skip-redis-config-generation')
-link_call=$(grep -n '^link_site_dir$' "$INIT_SH" | head -1 | cut -d: -f1)
+bench_init=$(line_of 'bench init --ignore-exist')
+assert_call=$(grep -n '^assert_site_mount$' "$INIT_SH" | head -1 | cut -d: -f1)
 first_site_cmd=$(line_of 'bench --site "$SITE_NAME"')
-if [ -n "$link_call" ] && [ "$link_call" -gt "$bench_init" ] && [ "$link_call" -lt "$first_site_cmd" ]; then
-    pass "link_site_dir runs after bench init and before the first site command"
+if [ -n "$assert_call" ] && [ -n "$bench_init" ] && [ "$assert_call" -gt "$bench_init" ] && [ "$assert_call" -lt "$first_site_cmd" ]; then
+    pass "assert_site_mount runs after bench init and before the first site command"
 else
-    fail "link_site_dir is not between bench init ($bench_init) and the first site command ($first_site_cmd): '$link_call'"
+    fail "assert_site_mount is not between bench init ($bench_init) and the first site command ($first_site_cmd): '$assert_call'"
 fi
+# Docker creates $BENCH_DIR for the mount, so a guard on the folder would skip bench init forever.
+check "bench init is guarded on the frappe app, not the bench folder" 1 \
+    "$(grep -cxF 'if [ ! -d "$BENCH_DIR/apps/frappe" ]; then' "$INIT_SH")"
+check "no guard on the bench folder itself" 0 "$(grep -cF 'if [ ! -d "$BENCH_DIR" ]' "$INIT_SH")"
+init_cmd="$(grep -E '^[[:space:]]+bench init ' "$INIT_SH")"
+check "exactly one bench init command" 1 "$(grep -c . <<< "$init_cmd")"
+check "bench init populates the existing folder (--ignore-exist)" 1 "$(grep -c -- '--ignore-exist' <<< "$init_cmd")"
+# A failed init asks "rollback?" and then rmtree's the bench, mounted site included.
+check "bench init reads no stdin, so its rollback prompt cannot delete the mounted site" 1 \
+    "$(grep -cE '< /dev/null[[:space:]]*$' <<< "$init_cmd")"
+# Otherwise a 6-hourly bench backup writes site_config backups (key, db password) for the S3 push.
+check "bench init installs no backup crontab (--no-backups)" 1 "$(grep -c -- '--no-backups' <<< "$init_cmd")"
+chown_line=$(grep -n 'sudo chown frappe:frappe "$BENCH_DIR" "$BENCH_DIR/sites"' "$INIT_SH" | head -1 | cut -d: -f1)
+if [ -n "$chown_line" ] && [ "$chown_line" -lt "$bench_init" ]; then
+    pass "the root-owned folders Docker created are handed to frappe before bench init"
+else
+    fail "no chown of \$BENCH_DIR and sites before bench init ('$chown_line', init $bench_init)"
+fi
+check "init.sh never symlinks the site" 0 "$(grep -v '^[[:space:]]*#' "$INIT_SH" | grep -c 'ln -s')"
+check "the boot-time chown skips the mounted site folder" 2 \
+    "$(grep -cF -- '-path "$BENCH_DIR/sites/$SITE_NAME" -prune' "$INIT_SH")"
+check "no recursive chown/chmod walks the whole bench" 0 "$(grep -cE '^(chown|chmod) -R .*frappe-bench' "$INIT_SH")"
 pre_block=$(grep -n -A2 'if \[ -f "$BENCH_DIR/sites/$SITE_NAME/site_config.json" \]; then' "$INIT_SH" \
     | grep 'ensure_encryption_key strict' | head -1 | cut -d- -f1)
 first_migrate=$(all_lines 'bench --site "$SITE_NAME" migrate' | head -1)

@@ -22,6 +22,11 @@
 # with a warning. T10 runs the in-container check itself against a fake cron file and /proc.
 # T12 pins the snippet from before the bucket check and shows it passed a bucketless container.
 #
+# T7b-T8b, T13-T14 (VC-776): the site must be the volume mounted in place, not a symlink, and
+# Frappe's scheduler must list the site and start a job after boot. T7b and T14 run the
+# in-container Python against fixtures and a stand-in frappe package; T8b pins the pre-VC-776
+# check and shows it passed a symlinked site. A pause in site_config warns and passes.
+#
 # Run:  bash .github/scripts/__tests__/verify-site.test.sh
 # Exit: 0 = all pass, 1 = a failure
 
@@ -61,13 +66,31 @@ exec "$@"
 STUB
     cat > "$1/docker" <<'STUB'
 #!/usr/bin/env bash
-# The persistence check execs python3 in the container and the files backup check execs bash;
-# answer each with the scenario's state.
+# The persistence check execs python3 in the container, the scheduler check execs the bench's
+# env python, and the files backup check execs bash; answer each with the scenario's state.
+echo "$*" >> "${DOCKER_LOG:-/dev/null}"
 case " $* " in
+    *" ps -q frappe "*)
+        echo cid123
+        exit 0
+        ;;
+    *" inspect "*)
+        echo "${STARTED_AT-2026-11-24T10:00:00.123456789Z}"
+        exit 0
+        ;;
+    *" exec "*"/env/bin/python "*)
+        cat > /dev/null
+        # SCHEDULER_STATES = space-separated answers, one per attempt; the last one repeats.
+        n=$(( $(cat "$SCHED_COUNT" 2>/dev/null || echo 0) + 1 )); [ -n "${SCHED_COUNT:-}" ] && echo "$n" > "$SCHED_COUNT"
+        set -- ${SCHEDULER_STATES:-advancing}; [ "$n" -gt "$#" ] && n=$#; shift $((n - 1))
+        [ "$1" = "unreachable" ] && exit 1
+        echo "$1"
+        exit 0
+        ;;
     *" exec "*" python3 "*)
         cat > /dev/null
-        [ "${PERSISTENCE_STATE:-match:volume}" = "unreachable" ] && exit 1
-        echo "${PERSISTENCE_STATE:-match:volume}"
+        [ "${PERSISTENCE_STATE:-match:mount}" = "unreachable" ] && exit 1
+        echo "${PERSISTENCE_STATE:-match:mount}"
         exit 0
         ;;
     *" exec "*" bash "*)
@@ -97,6 +120,7 @@ STUB
 run_verify() {
     mkdir -p "$3/deploy"
     PATH="$2:$PATH" FAILURE_LOG_DIR="$3/var-log/erp-deploy" \
+        SCHEDULER_TIMEOUT="${SCHEDULER_TIMEOUT:-0}" SCHEDULER_INTERVAL="${SCHEDULER_INTERVAL:-0}" \
         bash "$1" "$3/deploy" docker-compose.yml http://localhost:8000 2 1 \
         > "$3/stdout" 2> "$3/stderr"
     echo $? > "$3/status"
@@ -177,12 +201,14 @@ echo
 
 # ---------------------------------------------------------------------------
 # T6-T8 — the site must answer AND be one that survives the next deploy: the pinned
-#          encryption_key in site_config.json, and sites/<site> on the frappe-site-data volume.
-echo "T6: a healthy site passes only with the pinned key on the volume"
-for state in match:volume mismatch:volume absent:volume match:no-volume unreadable:no-volume unreachable; do
+#          encryption_key in site_config.json, and sites/<site> being the frappe-site-data
+#          volume mounted in place. A symlink is not enough (VC-776): Frappe's get_sites() skips
+#          it, so the scheduler ran nothing for two months while this check passed.
+echo "T6: a healthy site passes only with the pinned key and the volume mounted at the site"
+for state in match:mount match:link match:no-volume mismatch:mount absent:mount unreadable:no-volume unreachable; do
     S6="$WORK/s6-${state//:/-}"; make_stubs "$S6/bin" 200
     PERSISTENCE_STATE="$state" run_verify "$SCRIPT_UNDER_TEST" "$S6/bin" "$S6"
-    if [ "$state" = "match:volume" ]; then
+    if [ "$state" = "match:mount" ]; then
         check "state $state: exited 0" 0 "$(cat "$S6/status")"
         check "state $state: reported the site verified" 1 "$(grep -c 'Site verified' "$S6/stdout")"
     else
@@ -195,13 +221,45 @@ done
 echo
 
 echo "T7: the check runs inside the frappe container with the deploy's env file"
-if grep -qF 'sudo docker compose --env-file "$DEPLOY_DIR/.env" -f "$COMPOSE_FILE" exec -T frappe python3 -' "$SCRIPT_UNDER_TEST"; then
-    pass "check execs python3 in the frappe service with --env-file"
+check "COMPOSE carries the deploy env file" 1 \
+    "$(grep -cxF 'COMPOSE=(sudo docker compose --env-file "$DEPLOY_DIR/.env" -f "$COMPOSE_FILE")' "$SCRIPT_UNDER_TEST")"
+if grep -qF '"${COMPOSE[@]}" exec -T frappe python3 -' "$SCRIPT_UNDER_TEST"; then
+    pass "check execs python3 in the frappe service through COMPOSE"
 else
     fail "check does not exec in the frappe service with the deploy env file"
 fi
 check "check never prints the key (only a state word)" 0 \
     "$(sed -n '/^check_site_persistence() {/,/^}/p' "$SCRIPT_UNDER_TEST" | grep -c 'print(current\|print(key)\|print(os.environ')"
+echo
+
+echo "T7b: the in-container persistence check tells a mount from a symlink and a plain folder"
+PERSIST_PY="$(sed -n "/<<'PERSIST_PY'\$/,/^PERSIST_PY\$/p" "$SCRIPT_UNDER_TEST" | sed '1d;$d')"
+if [ -z "$PERSIST_PY" ]; then
+    fail "could not extract the persistence check from $SCRIPT_UNDER_TEST"
+else
+    P7="$(mkdir -p "$WORK/t7b" && cd "$WORK/t7b" && pwd -P)"
+    KEY7="pinned-key"
+    site_with_key() { mkdir -p "$1"; printf '{"encryption_key": "%s"}\n' "$2" > "$1/site_config.json"; }
+    mountinfo_for() { echo "99 1 0:52 /volumes/x/_data/site.test $1 rw - ext4 /dev/root rw" > "$2"; }
+    persist() { # $1 = site dir, $2 = mountinfo file
+        env -i PATH=/usr/bin:/bin SITE_DIR="$1" MOUNTINFO="$2" ENCRYPTION_KEY="$KEY7" python3 - <<<"$PERSIST_PY"
+    }
+    site_with_key "$P7/mounted/site.test" "$KEY7"; mountinfo_for "$P7/mounted/site.test" "$P7/mi-mounted"
+    check "mounted site with the pinned key" match:mount "$(persist "$P7/mounted/site.test" "$P7/mi-mounted")"
+    site_with_key "$P7/vol/site.test" "$KEY7"; mkdir -p "$P7/linked"; ln -s "$P7/vol/site.test" "$P7/linked/site.test"
+    mountinfo_for "$P7/linked/site.test" "$P7/mi-linked"
+    check "symlinked site, even if listed as a mount" match:link "$(persist "$P7/linked/site.test" "$P7/mi-linked")"
+    site_with_key "$P7/plain/site.test" "$KEY7"; mountinfo_for "$P7/other" "$P7/mi-plain"
+    check "plain folder that is not a mount" match:no-volume "$(persist "$P7/plain/site.test" "$P7/mi-plain")"
+    mkdir -p "$P7/real"; site_with_key "$P7/real/site.test" "$KEY7"; ln -s "$P7/real" "$P7/parent-link"
+    mountinfo_for "$P7/parent-link/site.test" "$P7/mi-parent"
+    check "site reached through a symlinked parent (public files would 404)" match:no-volume \
+        "$(persist "$P7/parent-link/site.test" "$P7/mi-parent")"
+    site_with_key "$P7/other-key/site.test" "not-the-pin"; mountinfo_for "$P7/other-key/site.test" "$P7/mi-ok"
+    check "mounted site with a different key" mismatch:mount "$(persist "$P7/other-key/site.test" "$P7/mi-ok")"
+    check "missing mountinfo is never read as mounted" match:no-volume "$(persist "$P7/mounted/site.test" "$P7/absent")"
+    check "missing site_config" unreadable "$(persist "$P7/nowhere" "$P7/mi-mounted")"
+fi
 echo
 
 # T8 — anti-vacuity: the script before this check reports a site with no volume as verified.
@@ -214,6 +272,21 @@ if git -C "$SCRIPT_DIR" show "$PRE_CHECK_REF:.github/scripts/remote/verify-site.
     check "pre-check script exits 0 for a site off the volume -- T6 detects the gap" 0 "$(cat "$S8/status")"
 else
     fail "could not read $PRE_CHECK_REF:.github/scripts/remote/verify-site.sh -- the control did not run (fetch full history)"
+fi
+echo
+
+# T8b — anti-vacuity: the script before the mount check called a SYMLINKED site healthy (its
+#        word for it was "volume"), and had no scheduler check at all. That is the deploy that
+#        stayed green from 25 Sep 2026 while no scheduled job ran.
+echo "T8b: the pre-mount script passes a symlinked site the scheduler cannot see (anti-vacuity control)"
+PRE_MOUNT_REF="bc53fd12174e3b8bec3ff18503b9d07d51732eb3"
+BASE8B="$WORK/pre-mount-verify-site.sh"
+if git -C "$SCRIPT_DIR" show "$PRE_MOUNT_REF:.github/scripts/remote/verify-site.sh" > "$BASE8B" 2>/dev/null; then
+    S8B="$WORK/s8b"; make_stubs "$S8B/bin" 200
+    PERSISTENCE_STATE="match:volume" SCHEDULER_STATES="invisible" run_verify "$BASE8B" "$S8B/bin" "$S8B"
+    check "pre-mount script exits 0 for a symlinked, unscheduled site -- T6/T13 detect the gap" 0 "$(cat "$S8B/status")"
+else
+    fail "could not read $PRE_MOUNT_REF:.github/scripts/remote/verify-site.sh -- the control did not run (fetch full history)"
 fi
 echo
 
@@ -276,7 +349,8 @@ PRE_BACKUP_REF="bec5cbaf5de278698341a5644de9b7371a9bf507"
 BASE11="$WORK/pre-backup-verify-site.sh"
 if git -C "$SCRIPT_DIR" show "$PRE_BACKUP_REF:.github/scripts/remote/verify-site.sh" > "$BASE11" 2>/dev/null; then
     S11="$WORK/s11"; make_stubs "$S11/bin" 200
-    BACKUP_STATE="missing:stopped" run_verify "$BASE11" "$S11/bin" "$S11"
+    # That script predates the mount check and speaks the old persistence word for "on the volume".
+    PERSISTENCE_STATE="match:volume" BACKUP_STATE="missing:stopped" run_verify "$BASE11" "$S11/bin" "$S11"
     check "pre-check script exits 0 with no backup job -- T9 detects the gap" 0 "$(cat "$S11/status")"
 else
     fail "could not read $PRE_BACKUP_REF:.github/scripts/remote/verify-site.sh -- the control did not run (fetch full history)"
@@ -295,6 +369,133 @@ if git -C "$SCRIPT_DIR" show "$PRE_BUCKET_REF:.github/scripts/remote/verify-site
     check "pre-check snippet calls a bucketless container healthy -- T10 detects the gap"         installed:running "$got12"
 else
     fail "could not read $PRE_BUCKET_REF:.github/scripts/remote/verify-site.sh -- the control did not run (fetch full history)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# T13-T14 (VC-776) — the scheduler. After VC-644 the site answered and the deploy went green
+#           while Frappe's scheduler skipped the site for two months: no inbox fetch, no email
+#           queue, no HR jobs, no error anywhere.
+echo "T13: a healthy site passes only when the scheduler sees it and a job has run since boot"
+run_sched() { # $1 = scenario name; SCHEDULER_STATES / STARTED_AT / timeouts from the caller
+    S13="$WORK/s13-$1"; make_stubs "$S13/bin" 200
+    : > "$S13/count"
+    SCHED_COUNT="$S13/count" DOCKER_LOG="$S13/docker.log" run_verify "$SCRIPT_UNDER_TEST" "$S13/bin" "$S13"
+}
+SCHEDULER_STATES="advancing" run_sched ok
+check "advancing: exited 0" 0 "$(cat "$WORK/s13-ok/status")"
+check "advancing: reported the site verified" 1 "$(grep -c 'Site verified' "$WORK/s13-ok/stdout")"
+for state in invisible inactive stalled no-scheduler error unreachable; do
+    SCHEDULER_STATES="$state" run_sched "$state"
+    check "$state: exited 1 (the deploy goes red)" 1 "$(cat "$WORK/s13-$state/status")"
+    check "$state: stderr names the scheduler failure" 1 \
+        "$(grep -c "FATAL: scheduler check failed (state: $state)" "$WORK/s13-$state/stderr")"
+    check "$state: not reported as verified" 0 "$(grep -c 'Site verified' "$WORK/s13-$state/stdout")"
+done
+# Retried states are polled until the timeout; a site Frappe cannot list fails at once.
+SCHEDULER_TIMEOUT=2 SCHEDULER_INTERVAL=1 SCHEDULER_STATES="stalled" run_sched stalled-timeout
+check "stalled: retried until the timeout (3 attempts)" 3 "$(cat "$WORK/s13-stalled-timeout/count")"
+check "stalled: every attempt is announced" 3 "$(grep -c '^scheduler attempt ' "$WORK/s13-stalled-timeout/stdout")"
+# One exec per attempt = one database connection per attempt, so no stale snapshot.
+check "stalled: each attempt is a separate exec" 3 "$(grep -c ' exec .*/env/bin/python' "$WORK/s13-stalled-timeout/docker.log")"
+SCHEDULER_TIMEOUT=5 SCHEDULER_INTERVAL=1 SCHEDULER_STATES="invisible" run_sched invisible-fast
+check "invisible: fails on the first attempt, without waiting" 1 "$(cat "$WORK/s13-invisible-fast/count")"
+SCHEDULER_TIMEOUT=5 SCHEDULER_INTERVAL=1 SCHEDULER_STATES="no-scheduler stalled advancing" run_sched recovers
+check "a scheduler that catches up within the window: exited 0" 0 "$(cat "$WORK/s13-recovers/status")"
+check "a scheduler that catches up within the window: 3 attempts" 3 "$(cat "$WORK/s13-recovers/count")"
+# A deliberate pause in site_config (e.g. holding a backlog before release) warns but passes.
+SCHEDULER_TIMEOUT=5 SCHEDULER_INTERVAL=1 SCHEDULER_STATES="paused" run_sched paused
+check "paused: exited 0 (an operator hold does not fail the deploy)" 0 "$(cat "$WORK/s13-paused/status")"
+check "paused: not polled again" 1 "$(cat "$WORK/s13-paused/count")"
+check "paused: stderr warns that scheduled jobs will not run" 1 \
+    "$(grep -c 'WARNING: the scheduler is paused in site_config' "$WORK/s13-paused/stderr")"
+check "paused: the last line of the log repeats that it is still paused" 1 \
+    "$(tail -1 "$WORK/s13-paused/stdout" | grep -c 'WARNING: the scheduler is still PAUSED')"
+check "advancing: no paused warning" 0 "$(grep -c 'still PAUSED' "$WORK/s13-ok/stdout")"
+# Anything the check prints that is not a known state word is logged and handled as 'error'.
+SCHEDULER_TIMEOUT=0 SCHEDULER_STATES="Some-frappe-banner" run_sched unknown-word
+check "unknown output: exited 1" 1 "$(cat "$WORK/s13-unknown-word/status")"
+check "unknown output: logged as error, not echoed" 1 \
+    "$(grep -c '^scheduler attempt 1 (0s): error$' "$WORK/s13-unknown-word/stdout")"
+check "unknown output: never reaches the log" 0 "$(grep -c 'Some-frappe-banner' "$WORK/s13-unknown-word/stdout" "$WORK/s13-unknown-word/stderr" | awk -F: '{s+=$2} END {print s}')"
+STARTED_AT="" SCHEDULER_STATES="advancing" run_sched no-container
+check "no container start time: exited 1" 1 "$(cat "$WORK/s13-no-container/status")"
+check "no container start time: names it" 1 "$(grep -c 'state: no-container' "$WORK/s13-no-container/stderr")"
+check "the baseline passed in is the container's start time" 1 \
+    "$(grep -c 'exec -T -e VERIFY_BASELINE=2026-11-24T10:00:00.123456789Z ' "$WORK/s13-ok/docker.log")"
+check "the check uses the bench's python, which can import frappe" 1 \
+    "$(grep -c -- '-w /home/frappe/frappe-bench/sites frappe /home/frappe/frappe-bench/env/bin/python -' "$WORK/s13-ok/docker.log")"
+check "the scheduler log lines are state words only" 0 \
+    "$(grep '^scheduler attempt ' "$WORK"/s13-*/stdout | grep -vcE ': (advancing|paused|invisible|inactive|stalled|no-scheduler|error|unreachable)$')"
+echo
+
+echo "T14: the in-container scheduler check reads Frappe correctly"
+SCHED_PY="$(sed -n "/<<'SCHED_PY'\$/,/^SCHED_PY\$/p" "$SCRIPT_UNDER_TEST" | sed '1d;$d')"
+if [ -z "$SCHED_PY" ]; then
+    fail "could not extract the scheduler check from $SCRIPT_UNDER_TEST"
+else
+    # A stand-in frappe package: the real one needs a bench, a database and Redis. It exposes
+    # exactly the calls the check makes, driven by FAKE_* variables.
+    F14="$WORK/t14/fake"; mkdir -p "$F14/frappe/utils"
+    cat > "$F14/frappe/__init__.py" <<'FAKE'
+import os
+class _DB:
+    def sql(self, query):
+        value = os.environ.get("FAKE_LAST")
+        if "last_execution" not in query:
+            raise RuntimeError("unexpected query")
+        import datetime
+        return [[datetime.datetime.fromisoformat(value) if value else None]]
+db = _DB()
+def init(site=None, sites_path=None):
+    if os.environ.get("FAKE_RAISE") == "init":
+        raise RuntimeError("db down")
+def connect():
+    pass
+class _Conf:
+    pause_scheduler = os.environ.get("FAKE_PAUSE") == "pause_scheduler"
+    maintenance_mode = os.environ.get("FAKE_PAUSE") == "maintenance_mode"
+class _Local:
+    conf = _Conf()
+local = _Local()
+FAKE
+    cat > "$F14/frappe/utils/__init__.py" <<'FAKE'
+import datetime, os
+def get_sites(sites_path=None):
+    return os.environ.get("FAKE_SITES", "").split()
+def convert_utc_to_system_timezone(ts):
+    # System timezone fixed at UTC+1 (British Summer Time) to prove the conversion is applied.
+    return ts.replace(tzinfo=datetime.timezone.utc).astimezone(datetime.timezone(datetime.timedelta(hours=1)))
+FAKE
+    cat > "$F14/frappe/utils/scheduler.py" <<'FAKE'
+import os
+def is_scheduler_inactive(verbose=True):
+    if verbose:
+        print("noise: maintenance mode")
+    return os.environ.get("FAKE_INACTIVE") == "1"
+def is_schduler_process_running():
+    return os.environ.get("FAKE_RUNNING", "1") == "1"
+FAKE
+    sched() { # FAKE_* from the caller; container started 10:00:00 UTC = 11:00:00 system time
+        env -i PATH=/usr/bin:/bin PYTHONPATH="$F14" SITE_NAME=site.test \
+            VERIFY_BASELINE="2026-11-24T10:00:00.123456789Z" "$@" python3 - <<<"$SCHED_PY"
+    }
+    check "a job started after boot" advancing "$(sched FAKE_SITES="a site.test" FAKE_LAST=2026-11-24T11:03:00)"
+    check "a job started exactly at boot" advancing "$(sched FAKE_SITES=site.test FAKE_LAST=2026-11-24T11:00:00)"
+    check "last job before boot, in system time" stalled "$(sched FAKE_SITES=site.test FAKE_LAST=2026-11-24T10:59:00)"
+    check "a UTC-vs-system-time mix-up would pass this; the check does not" stalled \
+        "$(sched FAKE_SITES=site.test FAKE_LAST=2026-11-24T10:30:00)"
+    check "no job has ever run" stalled "$(sched FAKE_SITES=site.test FAKE_LAST=)"
+    check "Frappe does not list the site (symlinked)" invisible "$(sched FAKE_SITES="other.site" FAKE_LAST=2026-11-24T11:03:00)"
+    check "scheduler disabled" inactive "$(sched FAKE_SITES=site.test FAKE_INACTIVE=1 FAKE_LAST=2026-11-24T11:03:00)"
+    check "scheduler process not running" no-scheduler "$(sched FAKE_SITES=site.test FAKE_RUNNING=0 FAKE_LAST=2026-11-24T11:03:00)"
+    check "pause_scheduler set in site_config" paused \
+        "$(sched FAKE_SITES=site.test FAKE_PAUSE=pause_scheduler FAKE_INACTIVE=1 FAKE_LAST=)"
+    check "maintenance_mode set in site_config" paused \
+        "$(sched FAKE_SITES=site.test FAKE_PAUSE=maintenance_mode FAKE_INACTIVE=1 FAKE_LAST=)"
+    check "a paused site Frappe cannot list is still invisible" invisible \
+        "$(sched FAKE_SITES="other.site" FAKE_PAUSE=pause_scheduler FAKE_LAST=)"
+    check "an exception becomes a state word, not a traceback" error "$(sched FAKE_SITES=site.test FAKE_RAISE=init 2>&1)"
 fi
 echo
 
