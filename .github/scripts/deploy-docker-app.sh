@@ -105,6 +105,24 @@ fi
 echo "=== Deploying with Docker Compose ==="
 cd $DEPLOY_DIR
 
+# The frappe service mounts its site folder with volume.subpath (VC-776), which needs Docker
+# Engine 26+ (API 1.45). Check before compose down, so an older engine leaves the running
+# stack up instead of taking it down and failing to start it again.
+docker_api="\$(sudo docker version --format '{{.Server.APIVersion}}' 2>/dev/null || true)"
+if [ -z "\$docker_api" ] || [ "\$(printf '%s\n%s\n' 1.45 "\$docker_api" | sort -V | head -1)" != "1.45" ]; then
+    echo "FATAL: Docker API \${docker_api:-unknown} is older than 1.45 (Engine 26); volume.subpath needs it." >&2
+    echo "The running stack was left up. Upgrade Docker on this host, then deploy again." >&2
+    exit 1
+fi
+echo "✓ Docker API \$docker_api supports volume.subpath"
+# The Compose plugin parses volume.subpath too; an older one rejects the file. Validate it here
+# for the same reason: before down, while the running stack is still up.
+if ! sudo docker compose --env-file $DEPLOY_DIR/.env -f $DOCKER_COMPOSE_FILE config -q; then
+    echo "FATAL: docker compose cannot parse $DOCKER_COMPOSE_FILE (cause above; an old Compose plugin rejects volume.subpath)." >&2
+    echo "The running stack was left up." >&2
+    exit 1
+fi
+
 # Before down: the first deploy with the site-data volume copies the running container's
 # uploaded files into it, or they would be discarded with the container. stdin is this
 # heredoc: without </dev/null anything in the seed that reads stdin eats the steps below.

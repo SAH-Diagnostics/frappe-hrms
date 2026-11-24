@@ -101,51 +101,58 @@ FRAPPE_REF="${FRAPPE_REF:-v16.35.0}"    # 012667b9c
 ERPNEXT_REF="${ERPNEXT_REF:-v16.36.0}"  # b30aa5334
 HRMS_REF="${HRMS_REF:-v16.20.0}"        # c0a04b80e
 
-# Initialize bench directory if it does not exist (non-destructive)
+# The bench is rebuilt inside every fresh container. sites/<site> is the frappe-site-data
+# volume mounted in place (docker-compose.yml), so Docker has already created $BENCH_DIR and
+# $BENCH_DIR/sites -- owned by root -- before this runs. The guard therefore keys on the frappe
+# app, not on the bench folder, and `--ignore-exist` lets bench init populate the folder that is
+# already there.
+#
+# stdin is closed on purpose. If bench init fails it asks "rollback?" and on yes runs
+# shutil.rmtree on the whole bench (bench/commands/make.py), which now contains the mounted site
+# and its uploaded files. With no stdin the prompt hits EOF and aborts instead.
+#
+# --no-backups: bench would otherwise install a 6-hourly `bench --site all backup` crontab. With
+# the site visible again it would write *-site_config_backup.json (encryption_key and db
+# password) into private/backups, which push-to-bucket.sh syncs to S3. Every environment's database
+# (prod, staging, dev) is on RDS with automated backups.
 BENCH_DIR="/home/frappe/frappe-bench"
 cd /home/frappe
-if [ ! -d "$BENCH_DIR" ]; then
+if [ ! -d "$BENCH_DIR/apps/frappe" ]; then
     echo "Creating bench at ${BENCH_DIR}"
-    bench init --skip-redis-config-generation --frappe-branch "$FRAPPE_REF" frappe-bench
+    sudo chown frappe:frappe "$BENCH_DIR" "$BENCH_DIR/sites" 2>/dev/null || true
+    bench init --ignore-exist --no-backups --skip-redis-config-generation --frappe-branch "$FRAPPE_REF" frappe-bench < /dev/null
 fi
 cd "$BENCH_DIR"
 
-# The bench is rebuilt inside a fresh container on every deploy, so anything under
-# sites/<site> that is not on the volume is lost: uploaded files, and site_config.json with
-# the encryption_key. The volume is mounted outside the bench on purpose -- a mount inside
-# it would create $BENCH_DIR before `bench init` runs, and the guard above would skip it.
-SITE_DATA_DIR="${SITE_DATA_DIR:-/home/frappe/site-data}"
-link_site_dir() {
-    local target="$SITE_DATA_DIR/$SITE_NAME"
-    local link="$BENCH_DIR/sites/$SITE_NAME"
+# sites/<site> must be the volume mounted in place: a real directory on its own mount. A symlink
+# is invisible to Frappe's get_sites(), so the scheduler runs nothing and public files 404
+# (VC-776); a plain directory would be thrown away by the next deploy with the encryption_key in
+# it. Refuse to start in either case. Mount points come from mountinfo field 5.
+MOUNTINFO="${MOUNTINFO:-/proc/self/mountinfo}"
+assert_site_mount() {
+    local site_dir="$BENCH_DIR/sites/$SITE_NAME"
 
-    if [ ! -d "$SITE_DATA_DIR" ]; then
-        echo "FATAL: $SITE_DATA_DIR is missing; the frappe-site-data volume is not mounted." >&2
-        echo "Refusing to start: site files and the encryption key would be lost on the next deploy." >&2
+    if [ -L "$site_dir" ]; then
+        echo "FATAL: $site_dir is a symlink. Frappe's scheduler ignores symlinked sites." >&2
+        echo "Mount the frappe-site-data volume at it instead (docker-compose.yml)." >&2
         exit 1
     fi
-    sudo chown frappe:frappe "$SITE_DATA_DIR"
-    mkdir -p "$target"
-
-    if [ -L "$link" ]; then
-        if [ "$(readlink "$link")" != "$target" ]; then
-            echo "FATAL: $link points to $(readlink "$link"), expected $target." >&2
-            exit 1
-        fi
-    elif [ -e "$link" ]; then
-        if [ -n "$(ls -A "$target")" ]; then
-            echo "FATAL: both $link and $target hold site data; refusing to choose one." >&2
-            exit 1
-        fi
-        cp -a "$link/." "$target/"
-        rm -rf "$link"
-        ln -s "$target" "$link"
-    else
-        ln -s "$target" "$link"
+    if [ ! -d "$site_dir" ]; then
+        echo "FATAL: $site_dir is missing; the frappe-site-data volume is not mounted there." >&2
+        exit 1
     fi
-    echo "Site directory: $link -> $target"
+    if [ "$(cd "$site_dir" && pwd -P)" != "$site_dir" ]; then
+        echo "FATAL: $site_dir resolves somewhere else; a parent folder is a symlink." >&2
+        exit 1
+    fi
+    if ! awk -v p="$site_dir" '$5 == p { found = 1 } END { exit !found }' "$MOUNTINFO"; then
+        echo "FATAL: $site_dir is not a mount point; site files and the encryption key" >&2
+        echo "would be lost on the next deploy. Mount the frappe-site-data volume there." >&2
+        exit 1
+    fi
+    echo "Site directory: $site_dir (frappe-site-data volume)"
 }
-link_site_dir
+assert_site_mount
 
 # Frappe encrypts stored secrets (2FA seeds, email passwords, API secrets) with the
 # encryption_key in site_config.json, and generates a random one when it is missing. A key
@@ -213,9 +220,10 @@ PY
     echo "✓ encryption_key written to site_config.json"
 }
 
-# Basic ownership to avoid permission surprises
-chown -R frappe:frappe /home/frappe/frappe-bench 2>/dev/null || true
-chmod -R u+w /home/frappe/frappe-bench/sites 2>/dev/null || true
+# Basic ownership to avoid permission surprises. The mounted site folder is pruned: walking
+# every uploaded file on the volume at each boot only makes boots slower as files accumulate.
+find "$BENCH_DIR" -path "$BENCH_DIR/sites/$SITE_NAME" -prune -o -exec chown frappe:frappe {} + 2>/dev/null || true
+find "$BENCH_DIR/sites" -path "$BENCH_DIR/sites/$SITE_NAME" -prune -o -exec chmod u+w {} + 2>/dev/null || true
 
 # Database configuration (write to common_site_config before site exists)
 if [ -n "$DB_HOST_VALUE" ]; then
